@@ -1,0 +1,1897 @@
+<!DOCTYPE html>
+<!--
+  KOMBINER™ — Kernel-Oriented Markup & Binding Engine (PDF)
+  Copyright (C) 2026 KADsuite / withshalom
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU Affero General Public License as published
+  by the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+  GNU Affero General Public License for more details.
+
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  KADsuite™, KAD™, KANVAS™, DOK™, KODEX™, KID™, KODE™ and KOMBINER™ are
+  trademarks of withshalom / KADsuite. Trademark rights are independent of
+  and not transferred by this AGPL-3.0 license.
+
+  ── ARCHITECTURE NOTE ───────────────────────────────────────────────────────
+  KOMBINER shares its chrome (topbar / ribbon / doc-tabs / side panels /
+  status bar, grid areas top-rib-tabs-left·stage·right-stat) with DOK and
+  KANVAS on purpose: someone who has learned one program in the suite should
+  not have to relearn where the menu bar went in the next.
+
+  Everything below the chrome is deliberately NOT DOK and NOT KANVAS:
+
+  1. NO PARAGRAPH MODEL. A page here is a fixed content surface — either a
+     real PDF page rendered by pdf.js to a canvas, or (with no file open) a
+     representative sample surface — with a separate ANNOTATION LAYER on top.
+     Editing a page never re-flows it the way DOK reflows a paragraph. That
+     is the whole point of a PDF: it is a page-description format, not a
+     document format, and this app's data model matches that instead of
+     fighting it.
+
+  2. TRUE REDACTION IS A SEPARATE STEP FROM MARKING. Draw-a-box just queues a
+     mark; nothing under it is touched until "Apply Redactions" burns the
+     mark to opaque and — where the underlying run is fully covered — clears
+     the text run itself, not merely paints over it. A production build would
+     additionally strip the covered operators from the page's content stream;
+     that step is noted, not faked, at applyRedactions().
+
+  3. KANVAS EXPORT IS A ONE-WAY HAND-OFF, NOT THE NATIVE FORMAT. Exporting to
+     .kvs rasterises each page as a background image object and re-expresses
+     only the ANNOTATIONS (redaction/highlight/stamp/added text/signature) as
+     real KANVAS vector objects on top, using KANVAS's own object schema
+     (type:'rect' | type:'text' | type:'image', KVS_VERSION 2.0). That is
+     the honest trade: you get a fully editable illustration surface, and you
+     lose the underlying PDF text/graphics as anything other than a picture.
+     Saving a PDF never goes through this path — .pdf stays .pdf, in place,
+     end to end.
+  ───────────────────────────────────────────────────────────────────────── -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#050405">
+<title>KOMBINER — PDF Kernel</title>
+<meta name="description" content="KOMBINER is KADsuite's browser-native PDF editor: text editing, redaction, forms, signatures and page ops on the real PDF, with an optional hand-off to KANVAS.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=Fira+Code:wght@300;400;500&display=swap">
+
+<style>
+:root {
+  /* shared void/glass chrome — identical across the suite */
+  --void:      #050405;
+  --glass:     rgba(12,7,9,0.93);
+  --glass2:    rgba(17,10,12,0.96);
+  --sunken:    rgba(0,0,0,0.30);
+  --border:    rgba(255,255,255,0.08);
+  --border-hi: rgba(255,255,255,0.16);
+  --hover:     rgba(255,255,255,0.06);
+  --active:    rgba(255,255,255,0.10);
+
+  /* KOMBINER accent — crimson, distinct from KANVAS cyan / DOK ink-blue */
+  --a1:  #ff3049;
+  --a2:  #e01130;
+  --a3:  #9c0a20;
+  --a1g: rgba(224,17,48,0.22);
+
+  --green: #00ffa3;
+  --amber: #ffb347;
+  --red:   #ff4466;
+
+  --t1: #f6ecec;
+  --t2: #a8848a;
+  --t3: #6a4850;
+  --t4: #2a161a;
+
+  --fd: 'Syne', sans-serif;
+  --fm: 'Fira Code', monospace;
+
+  --sw:   224px;   /* left: pages / tools panel */
+  --pw:   232px;   /* right: properties panel   */
+  --th:   44px;    /* topbar */
+  --rbh:  44px;    /* ribbon */
+  --tbh:  34px;    /* doc tabs */
+  --sh:   26px;    /* status bar */
+  --ruler:18px;
+
+  --desk:  #1c1013;
+  --paper: #ffffff;
+  --gutter:#170d10;
+
+  --hl:     #ffd400;  /* highlight ink   */
+  --stamp:  #c81428;  /* stamp ink       */
+}
+
+*, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+html, body { width:100%; height:100%; overflow:hidden; background:var(--void); color:var(--t1); font-family:var(--fd); font-size:13px; -webkit-font-smoothing:antialiased; -webkit-tap-highlight-color:transparent; }
+button, input, select, textarea { font-family:inherit; font-size:inherit; color:inherit; }
+button { background:none; border:none; cursor:pointer; }
+a { color:inherit; text-decoration:none; }
+::-webkit-scrollbar { width:9px; height:9px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.10); border-radius:5px; }
+::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,0.18); }
+
+#app {
+  display:grid; height:100%;
+  grid-template-columns: var(--sw) minmax(0,1fr) var(--pw);
+  grid-template-rows: var(--th) var(--rbh) var(--tbh) minmax(0,1fr) var(--sh);
+  grid-template-areas:
+    "top   top    top"
+    "rib   rib    rib"
+    "tabs  tabs   tabs"
+    "left  stage  right"
+    "stat  stat   stat";
+}
+
+/* ═══════════════════════════ TOPBAR ═══════════════════════════════════ */
+#topbar {
+  grid-area:top; display:flex; align-items:center; gap:0;
+  background:var(--glass); border-bottom:1px solid var(--border);
+  padding:0 10px; overflow-x:auto; overflow-y:hidden; scrollbar-width:none;
+}
+#topbar::-webkit-scrollbar { height:0; }
+.brand { display:flex; align-items:center; gap:9px; flex-shrink:0; padding-right:12px; }
+.brand-mark {
+  width:26px; height:26px; border-radius:7px; display:grid; place-items:center;
+  background:linear-gradient(140deg, var(--a1), var(--a3));
+  font-family:var(--fm); font-weight:500; font-size:10px; color:#fff;
+  box-shadow:0 0 16px rgba(224,17,48,0.40);
+}
+.brand-txt { line-height:1.15; }
+.brand-name {
+  font-weight:800; font-size:14px; letter-spacing:0.06em;
+  background:linear-gradient(92deg, var(--t1), var(--a1));
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+}
+.brand-sub { font-family:var(--fm); font-size:9px; color:var(--t2); letter-spacing:0.04em; }
+.tb-sep { width:1px; height:22px; background:var(--border); flex-shrink:0; margin:0 4px; }
+.tb-spacer { flex:1 1 auto; min-width:6px; }
+.docname {
+  font-family:var(--fm); font-size:10.5px; color:var(--t2);
+  padding:5px 10px; border-radius:6px; border:1px solid var(--border);
+  background:var(--sunken); max-width:230px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; flex-shrink:0; cursor:text;
+}
+.docname:hover { border-color:var(--border-hi); color:var(--t1); }
+.docname.dirty::after { content:' •'; color:var(--amber); }
+.rbtn.drawer-tog { display:none; }
+
+.mbar { display:flex; align-items:stretch; flex-shrink:0; height:100%; }
+.mbar-item {
+  position:relative; display:flex; align-items:center;
+  padding:0 11px; height:100%; cursor:pointer; user-select:none;
+  font-family:var(--fd); font-size:12.5px; font-weight:600;
+  letter-spacing:0.01em; color:var(--t2); white-space:nowrap;
+  transition:color .14s, background .14s;
+}
+.mbar-item:hover { color:var(--t1); background:var(--hover); }
+.mbar-item.on { color:var(--a1); background:var(--a1g); }
+.mbar-item.on::after {
+  content:''; position:absolute; left:6px; right:6px; bottom:0; height:2px;
+  background:var(--a1); border-radius:2px 2px 0 0;
+}
+.mdrop {
+  position:fixed; display:none; flex-direction:column; z-index:400;
+  min-width:242px; max-width:min(320px, calc(100vw - 12px));
+  max-height:calc(100vh - var(--th) - 16px); overflow-y:auto;
+  background:var(--glass2); backdrop-filter:blur(28px) saturate(180%);
+  -webkit-backdrop-filter:blur(28px) saturate(180%);
+  border:1px solid var(--border-hi); border-radius:10px;
+  box-shadow:0 18px 48px rgba(0,0,0,0.62), 0 0 0 1px rgba(0,0,0,0.4);
+  padding:5px; scrollbar-width:none;
+}
+.mdrop::-webkit-scrollbar { width:0; }
+.mdrop.on { display:flex; }
+.mrow {
+  display:grid; grid-template-columns:15px 1fr auto; align-items:center;
+  gap:9px; height:32px; padding:0 9px; border-radius:6px;
+  font-family:var(--fd); font-size:12.5px; color:var(--t2);
+  cursor:pointer; white-space:nowrap; transition:background .1s, color .1s;
+}
+.mrow:hover { background:var(--hover); color:var(--t1); }
+.mrow .mc { font-size:11px; color:var(--a1); opacity:0; text-align:center; }
+.mrow.on .mc { opacity:1; }
+.mrow .mk { font-family:var(--fm); font-size:9.5px; color:var(--t3); letter-spacing:0.02em; padding-left:14px; }
+.mrow:hover .mk { color:var(--t2); }
+.mrow.danger:hover { background:rgba(255,68,102,0.13); color:var(--red); }
+.msep { height:1px; background:var(--border); margin:5px 7px; }
+.mlabel { font-family:var(--fm); font-size:8.5px; letter-spacing:0.2em; text-transform:uppercase; color:var(--t3); padding:8px 9px 4px; }
+
+/* ═══════════════════════════ RIBBON (tool rail) ═══════════════════════ */
+#ribbon {
+  grid-area:rib; display:flex; align-items:center; gap:3px;
+  background:var(--glass2); border-bottom:1px solid var(--border);
+  padding:0 9px; overflow-x:auto; overflow-y:hidden; scrollbar-width:none;
+}
+#ribbon::-webkit-scrollbar { height:0; }
+.rb-sep { width:1px; height:22px; background:var(--border); flex-shrink:0; margin:0 6px; }
+.tbtn {
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:2px; width:42px; height:38px; border-radius:8px; color:var(--t2); flex-shrink:0;
+  border:1px solid transparent; transition:background .12s, color .12s, border-color .12s;
+}
+.tbtn:hover { background:var(--hover); color:var(--t1); }
+.tbtn.on { background:var(--a1g); color:var(--a1); border-color:rgba(224,17,48,0.35); }
+.tbtn svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.tbtn .tl { font-family:var(--fm); font-size:6.6px; letter-spacing:0.03em; }
+.rbtn {
+  display:grid; place-items:center; min-width:28px; height:28px; padding:0 6px;
+  border-radius:6px; color:var(--t2); font-size:13px; flex-shrink:0;
+  border:1px solid transparent; transition:background .12s, color .12s;
+}
+.rbtn:hover { background:var(--hover); color:var(--t1); }
+.rbtn.on { background:var(--a1g); color:var(--a1); border-color:rgba(224,17,48,0.30); }
+.rbtn svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
+.pagenav { display:flex; align-items:center; gap:5px; padding:0 7px; flex-shrink:0; }
+.pagenav input {
+  width:34px; height:26px; text-align:center; background:var(--sunken); border:1px solid var(--border);
+  border-radius:5px; color:var(--t1); font-family:var(--fm); font-size:11px; outline:none;
+}
+.pagenav input:focus { border-color:var(--a2); }
+.pagenav .of { font-family:var(--fm); font-size:10.5px; color:var(--t3); }
+.zoomrow { display:flex; align-items:center; gap:2px; padding:0 6px; flex-shrink:0; }
+.zoomrow button { width:24px; height:26px; border-radius:5px; color:var(--t2); display:grid; place-items:center; }
+.zoomrow button:hover { background:var(--hover); color:var(--t1); }
+#zoom-val { min-width:42px; text-align:center; font-family:var(--fm); font-size:10.5px; color:var(--t1); }
+.seg { display:flex; gap:0; border:1px solid var(--border); border-radius:6px; overflow:hidden; flex-shrink:0; }
+.seg button { height:27px; padding:0 9px; font-size:10.5px; color:var(--t2); background:var(--sunken); transition:background .12s, color .12s; }
+.seg button + button { border-left:1px solid var(--border); }
+.seg button:hover { color:var(--t1); background:var(--hover); }
+.seg button.on { background:var(--a1g); color:var(--a1); }
+
+/* ═══════════════════════════ DOC TABS ══════════════════════════════════ */
+#doctabs {
+  grid-area:tabs; display:flex; align-items:stretch; gap:2px;
+  background:var(--glass2); border-bottom:1px solid var(--border);
+  padding:0 8px; overflow-x:auto; overflow-y:hidden; scrollbar-width:none;
+}
+#doctabs::-webkit-scrollbar { height:0; }
+.doctab {
+  display:flex; align-items:center; gap:7px; flex-shrink:0; max-width:200px;
+  padding:0 10px; margin:5px 0; border-radius:7px; cursor:pointer;
+  color:var(--t2); border:1px solid transparent; user-select:none;
+  transition:background .12s, color .12s;
+}
+.doctab:hover { background:var(--hover); color:var(--t1); }
+.doctab.active { background:var(--a1g); color:var(--t1); border-color:rgba(224,17,48,0.35); }
+.dt-dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; background:transparent; }
+.dt-dot.on { background:var(--amber); }
+.dt-name { font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.dt-x { display:grid; place-items:center; width:16px; height:16px; border-radius:5px; font-size:9px; color:transparent; flex-shrink:0; }
+.doctab:hover .dt-x, .doctab.active .dt-x { color:var(--t2); }
+.dt-x:hover { background:var(--active); color:var(--t1) !important; }
+
+/* ═══════════════════════════ SIDEBARS ══════════════════════════════════ */
+.side { background:var(--glass); overflow-y:auto; overflow-x:hidden; display:flex; flex-direction:column; }
+#left  { grid-area:left;  border-right:1px solid var(--border); }
+#right { grid-area:right; border-left:1px solid var(--border); }
+.sec-h {
+  font-family:var(--fm); font-size:8.5px; letter-spacing:0.2em; text-transform:uppercase;
+  color:var(--t3); padding:13px 12px 7px; display:flex; align-items:center; justify-content:space-between;
+}
+.sec-h .hint { letter-spacing:0; text-transform:none; font-size:9px; color:var(--t3); cursor:pointer; }
+.sec-h .hint:hover { color:var(--a1); }
+.sec { padding:0 9px 9px; }
+
+.lmode { display:flex; gap:4px; margin:9px 9px 4px; }
+.lmode button { flex:1; height:27px; border-radius:6px; font-size:10.5px; color:var(--t2); background:var(--sunken); border:1px solid var(--border); transition:background .12s,color .12s,border-color .12s; }
+.lmode button:hover { color:var(--t1); border-color:var(--border-hi); }
+.lmode button.on { background:var(--a1g); color:var(--a1); border-color:rgba(224,17,48,0.32); }
+
+/* page thumbnails */
+#thumbs { padding:4px 9px 14px; display:flex; flex-direction:column; gap:9px; }
+.thumb {
+  position:relative; border-radius:8px; border:1px solid var(--border);
+  background:var(--sunken); cursor:pointer; overflow:hidden;
+  transition:border-color .12s, box-shadow .12s; padding:8px 8px 6px;
+}
+.thumb:hover { border-color:var(--border-hi); }
+.thumb.active { border-color:var(--a1); box-shadow:0 0 0 1px var(--a1), 0 0 16px rgba(224,17,48,0.25); }
+.thumb.dragover { border-color:var(--amber); }
+.thumb canvas { display:block; width:100%; height:auto; border-radius:3px; background:#fff; }
+.thumb-foot { display:flex; align-items:center; justify-content:space-between; margin-top:6px; }
+.thumb-num { font-family:var(--fm); font-size:9.5px; color:var(--t2); }
+.thumb-actions { display:flex; gap:2px; opacity:0; transition:opacity .12s; }
+.thumb:hover .thumb-actions { opacity:1; }
+.thumb-actions button { width:18px; height:18px; border-radius:4px; display:grid; place-items:center; color:var(--t3); }
+.thumb-actions button:hover { background:var(--hover); color:var(--t1); }
+.thumb-actions svg { width:11px; height:11px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; }
+.addpage {
+  height:56px; border-radius:8px; border:1px dashed var(--border-hi); color:var(--t3);
+  display:flex; align-items:center; justify-content:center; gap:6px; font-size:11px;
+  transition:background .12s, color .12s, border-color .12s;
+}
+.addpage:hover { background:var(--hover); color:var(--a1); border-color:var(--a1); }
+
+/* tool list (left, "Tools" mode) */
+#toollist { padding:4px 9px 14px; display:flex; flex-direction:column; gap:3px; }
+.trow {
+  display:flex; align-items:center; gap:10px; padding:8px 9px; border-radius:7px; cursor:pointer;
+  color:var(--t2); border:1px solid transparent; transition:background .12s, color .12s, border-color .12s;
+}
+.trow:hover { background:var(--hover); color:var(--t1); }
+.trow.on { background:var(--a1g); color:var(--t1); border-color:rgba(224,17,48,0.32); }
+.trow svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; color:var(--a1); }
+.trow .tname { font-size:12px; }
+.trow .tkey { margin-left:auto; font-family:var(--fm); font-size:9px; color:var(--t3); }
+
+/* right panel controls */
+.fld { padding:5px 3px 0; }
+.fld label { display:block; font-family:var(--fm); font-size:8.5px; letter-spacing:0.12em; text-transform:uppercase; color:var(--t3); margin-bottom:5px; }
+.fld select, .fld input[type=text], .fld input[type=number] {
+  width:100%; height:28px; border-radius:6px; background:var(--sunken); border:1px solid var(--border);
+  color:var(--t1); padding:0 8px; font-size:11.5px; outline:none;
+}
+.fld select:focus, .fld input:focus { border-color:var(--a2); }
+.fld select option { background:#160d0f; }
+.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:7px; }
+.swrow { display:flex; gap:6px; padding:2px 3px 0; }
+.sw { width:22px; height:22px; border-radius:50%; border:2px solid var(--border); cursor:pointer; transition:border-color .12s, transform .12s; flex-shrink:0; }
+.sw:hover { transform:scale(1.08); }
+.sw.on { border-color:#fff; box-shadow:0 0 0 1px var(--a1); }
+.rangewrap { display:flex; align-items:center; gap:8px; }
+.rangewrap input[type=range] { flex:1; accent-color:var(--a1); }
+.rangewrap span { font-family:var(--fm); font-size:9.5px; color:var(--t2); width:32px; text-align:right; }
+.pbtn {
+  width:100%; height:32px; margin-top:9px; border-radius:7px;
+  border:1px solid var(--border); background:var(--sunken); color:var(--t2);
+  font-size:11.5px; transition:background .12s, color .12s, border-color .12s;
+}
+.pbtn:hover { color:var(--t1); border-color:var(--border-hi); background:var(--hover); }
+.pbtn.primary { background:linear-gradient(140deg, var(--a2), var(--a3)); color:#fff; border-color:transparent; }
+.pbtn.primary:hover { filter:brightness(1.12); }
+.pbtn:disabled { opacity:0.4; pointer-events:none; }
+.pcap { font-size:9.5px; color:var(--t3); line-height:1.5; padding:6px 3px 0; }
+.readout { font-family:var(--fm); font-size:10px; color:var(--t2); line-height:1.75; padding:4px 3px 0; }
+.readout b { color:var(--t1); font-weight:500; }
+.badge { display:inline-flex; align-items:center; gap:4px; font-family:var(--fm); font-size:9.5px; padding:2px 7px; border-radius:10px; background:var(--a1g); color:var(--a1); }
+.perm-row { display:flex; align-items:center; gap:7px; padding:5px 3px; font-size:11px; color:var(--t2); }
+.perm-row svg { width:13px; height:13px; stroke:var(--t3); fill:none; stroke-width:1.8; flex-shrink:0; }
+.perm-row.locked svg { stroke:var(--green); }
+.stampswatch { display:flex; gap:6px; flex-wrap:wrap; padding-top:2px; }
+.stampswatch button { padding:5px 9px; border-radius:6px; border:1px solid var(--border); background:var(--sunken); color:var(--t2); font-family:var(--fm); font-size:9.5px; letter-spacing:0.04em; transition:all .12s; }
+.stampswatch button:hover { color:var(--t1); border-color:var(--border-hi); }
+.stampswatch button.on { color:var(--stamp); border-color:var(--stamp); background:rgba(200,20,40,0.10); }
+.sigcard { border:1px solid var(--border); border-radius:8px; padding:8px; background:var(--sunken); cursor:pointer; margin-top:7px; transition:border-color .12s; }
+.sigcard:hover { border-color:var(--border-hi); }
+.sigcard.on { border-color:var(--a1); }
+.sigcard img { display:block; width:100%; height:36px; object-fit:contain; filter:invert(1); }
+
+/* ═══════════════════════════ STAGE (desk + pages) ══════════════════════ */
+#stage {
+  grid-area:stage; position:relative; background:var(--desk);
+  display:grid; grid-template-rows:var(--ruler) minmax(0,1fr);
+  min-width:0; overflow:hidden;
+}
+#stage.no-ruler { grid-template-rows:minmax(0,1fr); }
+#stage.no-ruler #ruler-h { display:none; }
+#ruler-h { position:relative; background:var(--glass); border-bottom:1px solid var(--border); overflow:hidden; }
+#ruler-c { display:block; width:100%; height:100%; }
+#scroll { overflow:auto; position:relative; scroll-behavior:auto; padding:26px 0 90px; }
+#pages { display:flex; flex-direction:column; align-items:center; gap:22px; min-height:100%; }
+
+.page-box { position:relative; flex-shrink:0; transition:width .16s ease, height .16s ease; }
+.page-surface {
+  position:absolute; top:0; left:0; transform-origin:top left;
+  background:var(--paper); color:#161113;
+  box-shadow:0 2px 6px rgba(0,0,0,0.5), 0 16px 44px rgba(0,0,0,0.42);
+  transition:transform .16s ease, box-shadow .12s;
+  overflow:hidden;
+}
+.page-box.selected .page-surface { box-shadow:0 0 0 2px var(--a1), 0 16px 44px rgba(0,0,0,0.42); }
+.page-tag {
+  position:absolute; left:0; top:-19px; font-family:var(--fm); font-size:9px;
+  color:var(--t2); letter-spacing:0.08em; user-select:none; pointer-events:none;
+}
+.pdf-canvas { display:block; width:100%; height:100%; }
+
+/* sample document content (used when no real PDF is loaded) */
+.sample-content { position:relative; width:100%; height:100%; padding:64px 60px 60px; font-family:Georgia, 'Times New Roman', serif; }
+.sample-content .doc-h1 { font-family:var(--fd); font-weight:800; font-size:22px; letter-spacing:-0.01em; color:#18181c; margin-bottom:4px; }
+.sample-content .doc-sub { font-family:var(--fm); font-size:10.5px; color:#8a8a92; letter-spacing:0.04em; margin-bottom:26px; }
+.sample-content .editable-text { font-size:12.5px; line-height:1.7; color:#26262c; margin-bottom:14px; outline:none; border-radius:3px; }
+.sample-content .editable-text[contenteditable="true"] { background:rgba(255,212,0,0.14); box-shadow:0 0 0 1px rgba(255,48,73,0.4); padding:2px 4px; margin:-2px -4px 12px; }
+.sample-content .doc-rule { height:1px; background:#dcdce2; margin:18px 0; }
+.sample-content table { width:100%; border-collapse:collapse; font-size:11px; margin:10px 0 18px; }
+.sample-content th, .sample-content td { border:1px solid #d8d8e0; padding:7px 9px; text-align:left; }
+.sample-content th { background:#f4f4f8; font-family:var(--fm); font-size:9px; letter-spacing:0.06em; text-transform:uppercase; color:#7a7a86; }
+.sample-content .acct { font-family:var(--fm); }
+.sample-content .sig-row { display:flex; gap:40px; margin-top:44px; }
+.sample-content .sig-block { flex:1; }
+.sample-content .sig-line { border-top:1px solid #26262c; margin-top:34px; padding-top:5px; font-family:var(--fm); font-size:9.5px; color:#7a7a86; }
+.sample-content .chk { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:#26262c; margin-right:18px; }
+.sample-content .chk .box { width:12px; height:12px; border:1.4px solid #26262c; border-radius:2px; display:inline-block; }
+.sample-content .pagefoot { position:absolute; left:60px; right:60px; bottom:26px; font-family:var(--fm); font-size:8.5px; color:#a8a8b0; display:flex; justify-content:space-between; }
+
+/* annotation layer */
+.anno-layer { position:absolute; inset:0; }
+.anno-layer[data-locked="1"] { pointer-events:none; }
+.anno { position:absolute; box-sizing:border-box; }
+.anno.pending-select { outline:1.5px solid var(--a1); outline-offset:1px; }
+.anno-redact { background:repeating-linear-gradient(135deg, rgba(0,0,0,0.85) 0 6px, rgba(155,10,10,0.85) 6px 12px); border:1px solid rgba(0,0,0,0.9); cursor:move; }
+.anno-redact.applied { background:#0a0a0a; }
+.anno-whiteout { background:#ffffff; border:1px dashed rgba(0,0,0,0.35); cursor:move; }
+.anno-highlight { mix-blend-mode:multiply; opacity:0.42; cursor:move; border-radius:2px; }
+.anno-comment { width:22px !important; height:22px !important; border-radius:50% 50% 50% 4px; background:var(--amber); display:grid; place-items:center; cursor:pointer; box-shadow:0 2px 6px rgba(0,0,0,0.4); font-size:11px; color:#2a1c00; font-weight:700; }
+.anno-stamp { border:2.5px solid var(--stamp); color:var(--stamp); font-family:var(--fm); font-weight:700; letter-spacing:0.12em; display:flex; align-items:center; justify-content:center; text-align:center; border-radius:4px; background:rgba(200,20,40,0.06); cursor:move; user-select:none; padding:2px; }
+.anno-text { color:#18181c; font-family:Georgia, serif; cursor:text; outline:none; overflow:hidden; }
+.anno-text[contenteditable="true"] { box-shadow:0 0 0 1px var(--a1); background:rgba(255,255,255,0.6); }
+.anno-signature { cursor:move; }
+.anno-signature img { width:100%; height:100%; object-fit:contain; }
+.drag-ghost { position:absolute; border:1.5px dashed var(--a1); background:rgba(224,17,48,0.14); pointer-events:none; }
+.crop-ghost { position:absolute; border:1.5px dashed var(--amber); background:rgba(255,179,71,0.10); pointer-events:none; }
+.crop-mask { position:absolute; inset:0; background:rgba(0,0,0,0.55); pointer-events:none; }
+
+.commentpop {
+  position:absolute; z-index:30; width:200px; background:var(--glass2); border:1px solid var(--border-hi);
+  border-radius:9px; padding:9px; box-shadow:0 14px 34px rgba(0,0,0,0.5); backdrop-filter:blur(20px);
+}
+.commentpop textarea { width:100%; height:60px; resize:none; background:var(--sunken); border:1px solid var(--border); border-radius:6px; color:var(--t1); padding:6px 7px; font-size:11px; outline:none; }
+.commentpop .cprow { display:flex; gap:6px; margin-top:6px; }
+.commentpop button { flex:1; height:24px; border-radius:5px; font-size:10px; background:var(--sunken); color:var(--t2); border:1px solid var(--border); }
+.commentpop button.del { color:var(--red); }
+.commentpop button:hover { color:var(--t1); }
+
+/* empty-state overlay */
+#emptystate { position:absolute; inset:0; display:none; align-items:center; justify-content:center; flex-direction:column; gap:14px; text-align:center; z-index:5; }
+#emptystate.on { display:flex; }
+#emptystate .es-icon { width:52px; height:52px; border-radius:14px; display:grid; place-items:center; background:var(--a1g); color:var(--a1); }
+#emptystate .es-icon svg { width:26px; height:26px; stroke:currentColor; fill:none; stroke-width:1.6; }
+#emptystate h3 { font-size:15px; font-weight:700; }
+#emptystate p { font-size:11.5px; color:var(--t2); max-width:280px; line-height:1.6; }
+
+/* ═══════════════════════════ STATUS BAR ════════════════════════════════ */
+#status {
+  grid-area:stat; display:flex; align-items:center; gap:0;
+  background:var(--glass2); border-top:1px solid var(--border);
+  padding:0 11px; font-family:var(--fm); font-size:9.5px; color:var(--t2);
+  overflow-x:auto; scrollbar-width:none; white-space:nowrap;
+}
+#status::-webkit-scrollbar { height:0; }
+.sb { display:flex; align-items:center; gap:5px; padding:0 9px; }
+.sb b { color:var(--t1); font-weight:400; }
+.sb-sep { width:1px; height:12px; background:var(--border); flex-shrink:0; }
+#sb-msg { color:var(--a1); }
+.sb-dot { width:6px; height:6px; border-radius:50%; background:var(--t3); }
+.sb-dot.hot { background:var(--red); box-shadow:0 0 6px var(--red); }
+.sb-dot.ok { background:var(--green); }
+
+/* ═══════════════════════════ MODAL + TOAST + BUSY ══════════════════════ */
+.modal-scrim { position:fixed; inset:0; z-index:600; display:none; background:rgba(2,1,2,0.68); backdrop-filter:blur(4px); align-items:center; justify-content:center; padding:18px; }
+.modal-scrim.on { display:flex; }
+.modal { width:min(560px,100%); max-height:min(86vh,760px); overflow-y:auto; background:var(--glass2); border:1px solid var(--border-hi); border-radius:14px; box-shadow:0 26px 70px rgba(0,0,0,0.7); padding:22px 24px 20px; backdrop-filter:blur(28px) saturate(180%); }
+.modal h2 { font-size:16px; font-weight:700; margin-bottom:6px; }
+.modal .lede { font-size:12.5px; color:var(--t2); margin-bottom:16px; line-height:1.55; }
+.modal-actions { display:flex; gap:9px; justify-content:flex-end; margin-top:18px; }
+.mbtn { height:33px; padding:0 16px; border-radius:8px; font-size:12.5px; border:1px solid var(--border); background:var(--sunken); color:var(--t2); transition:all .12s; }
+.mbtn:hover { color:var(--t1); border-color:var(--border-hi); background:var(--hover); }
+.mbtn.primary { background:linear-gradient(140deg, var(--a2), var(--a3)); color:#fff; border-color:transparent; }
+.mbtn.primary:hover { filter:brightness(1.12); }
+.sigpad-wrap { border:1px solid var(--border); border-radius:10px; background:#fff; touch-action:none; }
+#sigpad { display:block; width:100%; height:180px; cursor:crosshair; border-radius:10px; }
+.kbd-list { display:grid; grid-template-columns:1fr 1fr; gap:2px 22px; }
+.kbd-line { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:3px 0; font-size:11.5px; color:var(--t2); }
+kbd { font-family:var(--fm); font-size:9.5px; padding:2px 6px; border-radius:4px; background:var(--t4); border:1px solid var(--border); color:var(--t1); }
+
+#toast { position:fixed; left:50%; bottom:44px; transform:translateX(-50%) translateY(12px); background:var(--glass2); border:1px solid var(--border-hi); border-radius:9px; padding:9px 17px; font-size:12px; color:var(--t1); z-index:700; opacity:0; pointer-events:none; transition:opacity .2s, transform .2s; box-shadow:0 12px 34px rgba(0,0,0,0.55); max-width:min(440px, calc(100vw - 28px)); text-align:center; backdrop-filter:blur(20px); }
+#toast.on { opacity:1; transform:translateX(-50%) translateY(0); }
+#busy { position:fixed; inset:0; z-index:800; display:none; background:rgba(2,1,2,0.55); backdrop-filter:blur(3px); align-items:center; justify-content:center; flex-direction:column; gap:14px; }
+#busy.on { display:flex; }
+.spinner { width:34px; height:34px; border-radius:50%; border:2.5px solid rgba(224,17,48,0.25); border-top-color:var(--a1); animation:spin .78s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+#busy-txt { font-family:var(--fm); font-size:11px; color:var(--t2); letter-spacing:0.04em; }
+
+/* mobile */
+@media (max-width:1100px) {
+  .rbtn.drawer-tog { display:grid; }
+  #app { grid-template-columns: 0 minmax(0,1fr) 0; }
+  #left, #right { position:fixed; top:calc(var(--th) + var(--rbh) + var(--tbh)); bottom:var(--sh); width:264px; z-index:300; box-shadow:0 0 40px rgba(0,0,0,0.5); transform:translateX(-110%); transition:transform .2s ease; }
+  #right { left:auto; right:0; transform:translateX(110%); }
+  #left.open { transform:translateX(0); }
+  #right.open { transform:translateX(0); }
+  .mbar-item { padding:0 9px; font-size:12px; }
+  .tbtn { width:38px; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ═══════════════════════════ TOPBAR ═══════════════════════════════ -->
+  <div id="topbar">
+    <button class="rbtn drawer-tog" onclick="toggleDrawer('left')" title="Pages &amp; tools">
+      <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+
+    <div class="brand">
+      <div class="brand-mark">KB</div>
+      <div class="brand-txt">
+        <div class="brand-name">KOMBINER</div>
+        <div class="brand-sub">PDF Kernel</div>
+      </div>
+    </div>
+
+    <div class="tb-sep"></div>
+
+    <div class="mbar" id="mbar">
+      <div class="mbar-item" data-menu="file">File
+        <div class="mdrop" id="dd-file">
+          <div class="mrow" onclick="menuDo(triggerOpen)"><span class="mc">&#10003;</span><span>Open PDF&#8230;</span><span class="mk">Ctrl O</span></div>
+          <div class="mrow" onclick="menuDo(newBlankDoc)"><span class="mc">&#10003;</span><span>New Blank Document</span><span class="mk">Ctrl N</span></div>
+          <div class="msep"></div>
+          <div class="mrow" onclick="menuDo(savePDF)"><span class="mc">&#10003;</span><span>Save PDF</span><span class="mk">Ctrl S</span></div>
+          <div class="mrow" onclick="menuDo(()=>savePDF(true))"><span class="mc">&#10003;</span><span>Save PDF As&#8230;</span><span class="mk">Ctrl &#8679; S</span></div>
+          <div class="msep"></div>
+          <div class="mlabel">Export</div>
+          <div class="mrow" onclick="menuDo(exportKVS)"><span class="mc">&#10003;</span><span>KANVAS Document</span><span class="mk">.kvs</span></div>
+          <div class="mrow" onclick="menuDo(exportDOKHtml)"><span class="mc">&#10003;</span><span>Reflow Copy for DOK</span><span class="mk">.html</span></div>
+          <div class="mrow" onclick="menuDo(exportFlatCopy)"><span class="mc">&#10003;</span><span>Flattened Copy</span><span class="mk">.pdf</span></div>
+          <div class="msep"></div>
+          <div class="mrow" onclick="menuDo(()=>window.print())"><span class="mc">&#10003;</span><span>Print&#8230;</span><span class="mk">Ctrl P</span></div>
+        </div>
+      </div>
+
+      <div class="mbar-item" data-menu="edit">Edit
+        <div class="mdrop" id="dd-edit">
+          <div class="mrow" onclick="menuDo(undo)"><span class="mc">&#10003;</span><span>Undo</span><span class="mk">Ctrl Z</span></div>
+          <div class="mrow" onclick="menuDo(deleteSelected)"><span class="mc">&#10003;</span><span>Delete Selected Mark</span><span class="mk">Del</span></div>
+          <div class="msep"></div>
+          <div class="mrow" onclick="menuDo(openFind)"><span class="mc">&#10003;</span><span>Find in Document&#8230;</span><span class="mk">Ctrl F</span></div>
+          <div class="msep"></div>
+          <div class="mrow danger" onclick="menuDo(clearAllAnnos)"><span class="mc">&#10003;</span><span>Clear All Marks on Page</span><span class="mk"></span></div>
+        </div>
+      </div>
+
+      <div class="mbar-item" data-menu="view">View
+        <div class="mdrop" id="dd-view">
+          <div class="mrow" onclick="menuDo(()=>zoomBy(0.1))"><span class="mc">&#10003;</span><span>Zoom In</span><span class="mk">Ctrl +</span></div>
+          <div class="mrow" onclick="menuDo(()=>zoomBy(-0.1))"><span class="mc">&#10003;</span><span>Zoom Out</span><span class="mk">Ctrl &minus;</span></div>
+          <div class="mrow" onclick="menuDo(()=>setZoom(1))"><span class="mc">&#10003;</span><span>Actual Size</span><span class="mk">Ctrl 0</span></div>
+          <div class="mrow" onclick="menuDo(fitWidth)"><span class="mc">&#10003;</span><span>Fit Width</span><span class="mk">Ctrl 9</span></div>
+          <div class="msep"></div>
+          <div class="mrow" id="m-ruler" onclick="menuDo(toggleRuler)"><span class="mc">&#10003;</span><span>Ruler</span><span class="mk">Ctrl R</span></div>
+          <div class="msep"></div>
+          <div class="mrow" id="m-left" onclick="menuDo(()=>togglePanel('left'))"><span class="mc">&#10003;</span><span>Pages &amp; Tools</span><span class="mk">F9</span></div>
+          <div class="mrow" id="m-right" onclick="menuDo(()=>togglePanel('right'))"><span class="mc">&#10003;</span><span>Properties</span><span class="mk">F10</span></div>
+        </div>
+      </div>
+
+      <div class="mbar-item" data-menu="page">Page
+        <div class="mdrop" id="dd-page">
+          <div class="mrow" onclick="menuDo(addBlankPage)"><span class="mc">&#10003;</span><span>Insert Blank Page</span><span class="mk"></span></div>
+          <div class="mrow" onclick="menuDo(duplicateActivePage)"><span class="mc">&#10003;</span><span>Duplicate Page</span><span class="mk">Ctrl D</span></div>
+          <div class="mrow danger" onclick="menuDo(deleteActivePage)"><span class="mc">&#10003;</span><span>Delete Page</span><span class="mk"></span></div>
+          <div class="msep"></div>
+          <div class="mrow" onclick="menuDo(()=>rotateActivePage(-90))"><span class="mc">&#10003;</span><span>Rotate Left</span><span class="mk"></span></div>
+          <div class="mrow" onclick="menuDo(()=>rotateActivePage(90))"><span class="mc">&#10003;</span><span>Rotate Right</span><span class="mk"></span></div>
+        </div>
+      </div>
+
+      <div class="mbar-item" data-menu="help">Help
+        <div class="mdrop" id="dd-help">
+          <div class="mrow" onclick="menuDo(openShortcuts)"><span class="mc">&#10003;</span><span>Keyboard Shortcuts</span><span class="mk">?</span></div>
+          <div class="mrow" onclick="menuDo(openAbout)"><span class="mc">&#10003;</span><span>About KOMBINER</span><span class="mk"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tb-spacer"></div>
+    <div class="docname" id="docname" onclick="renameDoc()" title="Click to rename">Untitled</div>
+    <button class="rbtn drawer-tog" onclick="toggleDrawer('right')" title="Properties">
+      <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4zM14 4v16"/></svg>
+    </button>
+  </div>
+
+  <!-- ═══════════════════════════ RIBBON (tool rail) ════════════════════ -->
+  <div id="ribbon">
+    <button class="tbtn on" data-tool="select" onclick="setTool('select')" title="Select &amp; move — V">
+      <svg viewBox="0 0 24 24"><path d="M4 3l7 17 2-7 7-2z"/></svg><span class="tl">SELECT</span>
+    </button>
+    <button class="tbtn" data-tool="edit" onclick="setTool('edit')" title="Edit text in place — E">
+      <svg viewBox="0 0 24 24"><path d="M4 20h4l11-11-4-4L4 16z"/></svg><span class="tl">EDIT</span>
+    </button>
+    <button class="tbtn" data-tool="addtext" onclick="setTool('addtext')" title="Add text — T">
+      <svg viewBox="0 0 24 24"><path d="M5 5h14M12 5v14"/></svg><span class="tl">TEXT</span>
+    </button>
+    <div class="rb-sep"></div>
+    <button class="tbtn" data-tool="highlight" onclick="setTool('highlight')" title="Highlight — H">
+      <svg viewBox="0 0 24 24"><path d="M3 20h18M6 16l8-8 3 3-8 8H6z"/></svg><span class="tl">MARK</span>
+    </button>
+    <button class="tbtn" data-tool="redact" onclick="setTool('redact')" title="Redact — R">
+      <svg viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="8" rx="1"/><path d="M4 8l16 8M20 8L4 16"/></svg><span class="tl">REDACT</span>
+    </button>
+    <button class="tbtn" data-tool="whiteout" onclick="setTool('whiteout')" title="Whiteout / erase — W">
+      <svg viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="8" rx="1" fill="none"/></svg><span class="tl">ERASE</span>
+    </button>
+    <div class="rb-sep"></div>
+    <button class="tbtn" data-tool="stamp" onclick="setTool('stamp')" title="Stamp — S">
+      <svg viewBox="0 0 24 24"><rect x="5" y="6" width="14" height="9" rx="1.5"/><path d="M9 19h6M12 15v4"/></svg><span class="tl">STAMP</span>
+    </button>
+    <button class="tbtn" data-tool="signature" onclick="setTool('signature')" title="Signature — G">
+      <svg viewBox="0 0 24 24"><path d="M4 18c3-1 4-9 7-9s2 7 5 7 3-4 4-4"/></svg><span class="tl">SIGN</span>
+    </button>
+    <button class="tbtn" data-tool="comment" onclick="setTool('comment')" title="Comment — C">
+      <svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg><span class="tl">NOTE</span>
+    </button>
+    <button class="tbtn" data-tool="crop" onclick="setTool('crop')" title="Crop page">
+      <svg viewBox="0 0 24 24"><path d="M6 2v16h16M18 22V6H2"/></svg><span class="tl">CROP</span>
+    </button>
+    <div class="rb-sep"></div>
+    <div class="pagenav">
+      <button class="rbtn" onclick="gotoPage(activePageIdx()-1)" title="Previous page"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+      <input id="pg-input" type="text" value="1" onchange="gotoPage(parseInt(this.value,10)-1)">
+      <span class="of">/ <span id="pg-total">1</span></span>
+      <button class="rbtn" onclick="gotoPage(activePageIdx()+1)" title="Next page"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+    </div>
+    <div class="rb-sep"></div>
+    <div class="zoomrow">
+      <button onclick="zoomBy(-0.1)" title="Zoom out">&minus;</button>
+      <span id="zoom-val">100%</span>
+      <button onclick="zoomBy(0.1)" title="Zoom in">+</button>
+    </div>
+    <button class="rbtn" onclick="fitWidth()" title="Fit width"><svg viewBox="0 0 24 24"><path d="M4 12h16M8 8l-4 4 4 4M16 8l4 4-4 4"/></svg></button>
+    <div class="rb-sep"></div>
+    <button class="rbtn" onclick="rotateActivePage(-90)" title="Rotate page left"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 1 3 6.7M3 12V6M3 12h6"/></svg></button>
+  </div>
+
+  <!-- ═══════════════════════════ DOC TABS ══════════════════════════════ -->
+  <div id="doctabs">
+    <div class="doctab active" id="tab-main">
+      <span class="dt-dot" id="tab-dot"></span>
+      <span class="dt-name" id="tab-name">Untitled.pdf</span>
+      <span class="dt-x">&#10005;</span>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════ LEFT: pages / tools ═══════════════════ -->
+  <div class="side" id="left">
+    <div class="lmode">
+      <button class="on" id="lm-pages" onclick="setLeftMode('pages')">Pages</button>
+      <button id="lm-tools" onclick="setLeftMode('tools')">Tools</button>
+    </div>
+
+    <div id="thumbs"></div>
+
+    <div id="toollist" style="display:none">
+      <div class="trow on" data-tool="select" onclick="setTool('select')"><svg viewBox="0 0 24 24"><path d="M4 3l7 17 2-7 7-2z"/></svg><span class="tname">Select &amp; Move</span><span class="tkey">V</span></div>
+      <div class="trow" data-tool="edit" onclick="setTool('edit')"><svg viewBox="0 0 24 24"><path d="M4 20h4l11-11-4-4L4 16z"/></svg><span class="tname">Edit Text</span><span class="tkey">E</span></div>
+      <div class="trow" data-tool="addtext" onclick="setTool('addtext')"><svg viewBox="0 0 24 24"><path d="M5 5h14M12 5v14"/></svg><span class="tname">Add Text</span><span class="tkey">T</span></div>
+      <div class="trow" data-tool="highlight" onclick="setTool('highlight')"><svg viewBox="0 0 24 24"><path d="M3 20h18M6 16l8-8 3 3-8 8H6z"/></svg><span class="tname">Highlight</span><span class="tkey">H</span></div>
+      <div class="trow" data-tool="redact" onclick="setTool('redact')"><svg viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="8" rx="1"/></svg><span class="tname">Redact</span><span class="tkey">R</span></div>
+      <div class="trow" data-tool="whiteout" onclick="setTool('whiteout')"><svg viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="8" rx="1"/></svg><span class="tname">Whiteout / Erase</span><span class="tkey">W</span></div>
+      <div class="trow" data-tool="stamp" onclick="setTool('stamp')"><svg viewBox="0 0 24 24"><rect x="5" y="6" width="14" height="9" rx="1.5"/></svg><span class="tname">Stamp</span><span class="tkey">S</span></div>
+      <div class="trow" data-tool="signature" onclick="setTool('signature')"><svg viewBox="0 0 24 24"><path d="M4 18c3-1 4-9 7-9s2 7 5 7 3-4 4-4"/></svg><span class="tname">Signature</span><span class="tkey">G</span></div>
+      <div class="trow" data-tool="comment" onclick="setTool('comment')"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg><span class="tname">Comment</span><span class="tkey">C</span></div>
+      <div class="trow" data-tool="crop" onclick="setTool('crop')"><svg viewBox="0 0 24 24"><path d="M6 2v16h16M18 22V6H2"/></svg><span class="tname">Crop Page</span><span class="tkey"></span></div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════ STAGE ══════════════════════════════════ -->
+  <div id="stage">
+    <div id="ruler-h"><canvas id="ruler-c"></canvas></div>
+    <div id="scroll">
+      <div id="pages"></div>
+      <div id="emptystate">
+        <div class="es-icon"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></div>
+        <h3>No pages</h3>
+        <p>Open a PDF, or start from a blank page, to begin marking up a document.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════ RIGHT: properties ═════════════════════ -->
+  <div class="side" id="right">
+    <div class="sec-h">Document</div>
+    <div class="sec">
+      <div class="readout">
+        <div><b id="ro-name">Untitled.pdf</b></div>
+        <div id="ro-pages">1 page</div>
+        <div id="ro-size">— PDF 1.7 · demo document</div>
+      </div>
+      <div class="perm-row locked"><svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="1.5"/><path d="M7 10V7a5 5 0 0 1 10 0v3"/></svg>Owner permissions — editable</div>
+    </div>
+
+    <div class="sec-h">Properties<span class="hint" id="prop-hint">select tool</span></div>
+    <div class="sec" id="propbody">
+      <div class="pcap">Pick a tool to see its options here.</div>
+    </div>
+
+    <div class="sec-h">Redactions</div>
+    <div class="sec">
+      <div class="readout">Pending on this page: <b id="ro-pending">0</b></div>
+      <button class="pbtn" style="border-color:rgba(224,17,48,0.4); color:var(--a1);" onclick="applyRedactions()">Apply Redactions</button>
+      <div class="pcap">Burns marks to solid black and removes any fully-covered text run beneath them — not just paints over it.</div>
+    </div>
+
+    <div class="sec-h">Save &amp; Export</div>
+    <div class="sec">
+      <button class="pbtn primary" onclick="savePDF()">Save PDF</button>
+      <button class="pbtn" onclick="exportKVS()">Export to KANVAS (.kvs)</button>
+      <div class="pcap">Rasterises each page as a background image and re-expresses your marks as editable KANVAS objects on top. One-way — for illustration work, not round-tripping.</div>
+      <button class="pbtn" onclick="exportDOKHtml()">Send Text to DOK (.html)</button>
+      <div class="pcap">Pulls edited/added text into a reflowable copy DOK can import — the original page layout is not preserved.</div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════ STATUS BAR ════════════════════════════ -->
+  <div id="status">
+    <div class="sb"><span class="sb-dot ok" id="sb-savedot"></span><span id="sb-savetxt">Saved</span></div>
+    <div class="sb-sep"></div>
+    <div class="sb">Page <b id="sb-page">1</b> / <span id="sb-total">1</span></div>
+    <div class="sb-sep"></div>
+    <div class="sb"><b id="sb-zoom">100%</b></div>
+    <div class="sb-sep"></div>
+    <div class="sb" id="sb-tool">Select</div>
+    <div class="sb-sep"></div>
+    <div class="sb"><span class="sb-dot" id="sb-redotdot"></span><span id="sb-redotxt">0 pending redactions</span></div>
+    <div class="sb-sep"></div>
+    <div class="sb" id="sb-msg"></div>
+  </div>
+
+</div>
+
+<!-- signature modal -->
+<div class="modal-scrim" id="modal-sig">
+  <div class="modal">
+    <h2>Draw your signature</h2>
+    <div class="lede">Draw with your mouse or finger. Save it, then click anywhere on the page to place it.</div>
+    <div class="sigpad-wrap"><canvas id="sigpad"></canvas></div>
+    <div class="modal-actions">
+      <button class="mbtn" onclick="clearSigPad()">Clear</button>
+      <button class="mbtn" onclick="close_('modal-sig')">Cancel</button>
+      <button class="mbtn primary" onclick="saveSignature()">Save Signature</button>
+    </div>
+  </div>
+</div>
+
+<!-- shortcuts modal -->
+<div class="modal-scrim" id="modal-kbd">
+  <div class="modal">
+    <h2>Keyboard Shortcuts</h2>
+    <div class="lede">Every tool below is also on the ribbon and the Tools panel.</div>
+    <div class="kbd-list">
+      <div class="kbd-line"><span>Select</span><kbd>V</kbd></div>
+      <div class="kbd-line"><span>Edit text</span><kbd>E</kbd></div>
+      <div class="kbd-line"><span>Add text</span><kbd>T</kbd></div>
+      <div class="kbd-line"><span>Highlight</span><kbd>H</kbd></div>
+      <div class="kbd-line"><span>Redact</span><kbd>R</kbd></div>
+      <div class="kbd-line"><span>Whiteout</span><kbd>W</kbd></div>
+      <div class="kbd-line"><span>Stamp</span><kbd>S</kbd></div>
+      <div class="kbd-line"><span>Signature</span><kbd>G</kbd></div>
+      <div class="kbd-line"><span>Comment</span><kbd>C</kbd></div>
+      <div class="kbd-line"><span>Open PDF</span><kbd>Ctrl O</kbd></div>
+      <div class="kbd-line"><span>Save PDF</span><kbd>Ctrl S</kbd></div>
+      <div class="kbd-line"><span>Delete mark</span><kbd>Del</kbd></div>
+      <div class="kbd-line"><span>Zoom in / out</span><kbd>Ctrl +/&minus;</kbd></div>
+      <div class="kbd-line"><span>Next / prev page</span><kbd>&#8595; / &#8593;</kbd></div>
+    </div>
+    <div class="modal-actions"><button class="mbtn primary" onclick="close_('modal-kbd')">Done</button></div>
+  </div>
+</div>
+
+<!-- about modal -->
+<div class="modal-scrim" id="modal-about">
+  <div class="modal">
+    <h2>About KOMBINER</h2>
+    <div class="lede">KOMBINER is KADsuite's PDF app. It edits the page you actually have — scanned, signed, or exported from somewhere else — in place, on a fixed content surface with a real redaction step, real form and signature tools, and page-level operations. It does not route your document through a paragraph model or a vector canvas to do it; those are DOK's and KANVAS's jobs, and this file explains, in its own header comment, why that split holds. Export to KANVAS is offered as a one-way hand-off for illustration work, not as the native path.</div>
+    <div class="modal-actions"><button class="mbtn primary" onclick="close_('modal-about')">Close</button></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<div id="busy"><div class="spinner"></div><div id="busy-txt">Working&#8230;</div></div>
+<input type="file" id="file-input" accept="application/pdf,.pdf" style="display:none" onchange="onFileChosen(event)">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+   HELPERS
+   ═══════════════════════════════════════════════════════════════════════ */
+const $  = id => document.getElementById(id);
+const $$ = sel => Array.prototype.slice.call(document.querySelectorAll(sel));
+const clamp = (v,a,b) => v<a?a:(v>b?b:v);
+const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const uid = (()=>{ let n=1; return ()=> 'o'+(n++); })();
+
+let toastT = null;
+function toast(msg){
+  const el = $('toast'); el.textContent = msg; el.classList.add('on');
+  const sb = $('sb-msg'); if (sb) sb.textContent = msg;
+  clearTimeout(toastT); toastT = setTimeout(()=>el.classList.remove('on'), 2200);
+}
+let busyDepth = 0;
+function busy(on,label){
+  busyDepth = Math.max(0, busyDepth + (on?1:-1));
+  if (label) $('busy-txt').textContent = label;
+  $('busy').classList.toggle('on', busyDepth>0);
+}
+function open_(id){ $(id).classList.add('on'); }
+function close_(id){ $(id).classList.remove('on'); }
+
+function download(data, filename, mime){
+  const blob = (data instanceof Uint8Array || data instanceof ArrayBuffer)
+    ? new Blob([data], {type:mime}) : new Blob([data], {type:mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 4000);
+}
+function hexToRgb01(hex){
+  hex = (hex||'#000000').replace('#','');
+  if (hex.length===3) hex = hex.split('').map(c=>c+c).join('');
+  const n = parseInt(hex,16);
+  return { r:((n>>16)&255)/255, g:((n>>8)&255)/255, b:(n&255)/255 };
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   STATE
+   ═══════════════════════════════════════════════════════════════════════ */
+const PAGE_W = 816, PAGE_H = 1056; // Letter @ 96dpi (matches pdf.js scale 1.3333 from 72pt)
+const PT_PER_PX = 0.75; // 72/96
+
+const STATE = {
+  filename: 'Untitled',
+  isRealPDF: false,
+  pdfBytes: null,
+  pdfjsDoc: null,
+  pages: [],          // {id, w, h, rotation, annos:[], pdfPageRef, srcIndex, isSample}
+  activePageId: null,
+  tool: 'select',
+  leftMode: 'pages',
+  zoom: 1,
+  ruler: true,
+  drag: null,          // in-progress drag/draw state
+  selectedAnno: null,  // {pageId, annoId}
+  history: [],
+  dirty: false,
+  savedSignatures: [], // dataURLs
+  pendingSigPlacement: false,
+  stampPreset: 'APPROVED',
+  stampColor: '#c81428',
+  highlightColor: '#ffd400',
+  highlightOpacity: 0.42,
+  textColor: '#18181c',
+  textSize: 14,
+};
+
+function pageById(id){ return STATE.pages.find(p=>p.id===id); }
+function activePageIdx(){ return STATE.pages.findIndex(p=>p.id===STATE.activePageId); }
+
+/* ════════════════════════════════════════════════════════════════════════
+   SAMPLE DOCUMENT (shown when no PDF is open)
+   ═══════════════════════════════════════════════════════════════════════ */
+function sampleDocHTML(pageIndex, total){
+  if (pageIndex===0){
+    return `
+      <div class="doc-h1">Service &amp; Consulting Agreement</div>
+      <div class="doc-sub">Reference no. SCA-2026-0417 &middot; Drafted for review</div>
+      <div class="editable-text" data-redactable="true">This Agreement is entered into between the Client and the Consultant for the
+      provision of advisory services described in Schedule A. Both parties agree to the terms set out below,
+      effective as of the date of last signature.</div>
+      <div class="editable-text" data-redactable="true">The Consultant will provide up to twenty (20) hours per month of advisory
+      work, invoiced monthly in arrears. Either party may terminate this Agreement with thirty (30) days written notice.</div>
+      <div class="doc-rule"></div>
+      <table>
+        <tr><th>Field</th><th>Detail</th></tr>
+        <tr><td>Client account no.</td><td class="acct" data-redactable="true">AC-88213-04471</td></tr>
+        <tr><td>Billing contact</td><td data-redactable="true">accounts@example-client.com</td></tr>
+        <tr><td>Effective date</td><td>To be countersigned</td></tr>
+      </table>
+      <div style="margin:14px 0 6px">
+        <span class="chk"><span class="box"></span>Standard terms accepted</span>
+        <span class="chk"><span class="box"></span>NDA attached</span>
+      </div>
+      <div class="sig-row">
+        <div class="sig-block"><div class="sig-line">Client signature &amp; date</div></div>
+        <div class="sig-block"><div class="sig-line">Consultant signature &amp; date</div></div>
+      </div>
+      <div class="pagefoot"><span>Service &amp; Consulting Agreement</span><span>Page 1 of ${total}</span></div>`;
+  }
+  return `
+      <div class="doc-h1">Schedule A — Invoice</div>
+      <div class="doc-sub">Line items for the current billing period</div>
+      <table>
+        <tr><th>Item</th><th>Hours</th><th>Rate</th><th>Amount</th></tr>
+        <tr><td>Strategy review</td><td>6</td><td>$180</td><td>$1,080</td></tr>
+        <tr><td>Implementation support</td><td>9</td><td>$180</td><td>$1,620</td></tr>
+        <tr><td>Documentation</td><td>3</td><td>$150</td><td>$450</td></tr>
+      </table>
+      <div class="editable-text" data-redactable="true" style="text-align:right;font-weight:700">Total due: $3,150.00</div>
+      <div class="doc-rule"></div>
+      <div class="editable-text" data-redactable="true">Remit payment by wire transfer to the account on file. Routing details
+      were sent under separate cover — do not include account numbers in email correspondence.</div>
+      <div class="editable-text" data-redactable="true">Wire account: <span class="acct">4471-002-8839-16</span></div>
+      <div class="pagefoot"><span>Service &amp; Consulting Agreement</span><span>Page 2 of ${total}</span></div>`;
+}
+
+function newSamplePage(idx, total){
+  return { id:uid(), w:PAGE_W, h:PAGE_H, rotation:0, annos:[], isSample:true, sampleIdx:idx };
+}
+
+function newBlankPageObj(){
+  return { id:uid(), w:PAGE_W, h:PAGE_H, rotation:0, annos:[], isSample:false, isBlank:true };
+}
+
+function initSampleDoc(){
+  STATE.filename = 'Untitled';
+  STATE.isRealPDF = false; STATE.pdfBytes=null; STATE.pdfjsDoc=null;
+  STATE.pages = [newSamplePage(0,2), newSamplePage(1,2)];
+  STATE.activePageId = STATE.pages[0].id;
+  markClean();
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   RENDERING — pages, thumbnails, ruler
+   ═══════════════════════════════════════════════════════════════════════ */
+function pageDisplayDims(p){
+  const swapped = p.rotation===90 || p.rotation===270;
+  return { w: swapped? p.h : p.w, h: swapped? p.w : p.h };
+}
+
+function renderPages(){
+  const wrap = $('pages');
+  wrap.innerHTML = '';
+  $('emptystate').classList.toggle('on', STATE.pages.length===0);
+  STATE.pages.forEach((p, idx)=>{
+    const disp = pageDisplayDims(p);
+    const box = document.createElement('div');
+    box.className = 'page-box' + (p.id===STATE.activePageId?' selected':'');
+    box.id = 'box-'+p.id;
+    box.style.width = (disp.w*STATE.zoom)+'px';
+    box.style.height = (disp.h*STATE.zoom)+'px';
+
+    const tag = document.createElement('div');
+    tag.className = 'page-tag'; tag.textContent = 'Page '+(idx+1);
+    box.appendChild(tag);
+
+    const surf = document.createElement('div');
+    surf.className = 'page-surface';
+    surf.id = 'page-'+p.id;
+    surf.style.width = p.w+'px';
+    surf.style.height = p.h+'px';
+    surf.style.transform = `scale(${STATE.zoom}) rotate(${p.rotation}deg)`;
+    surf.style.transformOrigin = 'top left';
+    if (p.rotation===90) surf.style.transform = `translateX(${p.h*STATE.zoom}px) rotate(90deg) scale(${STATE.zoom})`;
+    if (p.rotation===180) surf.style.transform = `translate(${p.w*STATE.zoom}px, ${p.h*STATE.zoom}px) rotate(180deg) scale(${STATE.zoom})`;
+    if (p.rotation===270) surf.style.transform = `translateY(${p.w*STATE.zoom}px) rotate(270deg) scale(${STATE.zoom})`;
+    surf.style.transformOrigin = 'top left';
+
+    if (p.pdfPageRef){
+      const cv = document.createElement('canvas');
+      cv.className = 'pdf-canvas'; cv.width = p.w; cv.height = p.h;
+      surf.appendChild(cv);
+      renderPdfPageToCanvas(p, cv);
+    } else if (p.isSample){
+      const c = document.createElement('div');
+      c.className = 'sample-content';
+      c.innerHTML = sampleDocHTML(p.sampleIdx, STATE.pages.filter(x=>x.isSample).length || 2);
+      surf.appendChild(c);
+    } else {
+      const c = document.createElement('div');
+      c.className = 'sample-content';
+      c.innerHTML = `<div class="doc-h1" style="color:#c9c9d2">Blank Page</div><div class="doc-sub">Add text, a stamp, or a signature</div>`;
+      surf.appendChild(c);
+    }
+
+    const annoLayer = document.createElement('div');
+    annoLayer.className = 'anno-layer';
+    annoLayer.id = 'anno-'+p.id;
+    surf.appendChild(annoLayer);
+
+    box.appendChild(surf);
+    wrap.appendChild(box);
+
+    wirePageInteractions(surf, p);
+    renderAnnotations(p);
+  });
+  updateNavReadouts();
+  applyToolCursors();
+}
+
+function renderAnnotations(p){
+  const layer = $('anno-'+p.id);
+  if (!layer) return;
+  layer.querySelectorAll('.anno, .commentpop').forEach(el=>el.remove());
+  p.annos.forEach(a=>{
+    const el = document.createElement('div');
+    el.dataset.annoId = a.id;
+    el.style.left = a.x+'px'; el.style.top = a.y+'px';
+    el.style.width = a.w+'px'; el.style.height = a.h+'px';
+    if (STATE.selectedAnno && STATE.selectedAnno.pageId===p.id && STATE.selectedAnno.annoId===a.id){
+      el.classList.add('pending-select');
+    }
+    if (a.type==='redact'){
+      el.className += ' anno anno-redact' + (a.applied?' applied':'');
+    } else if (a.type==='whiteout'){
+      el.className += ' anno anno-whiteout';
+    } else if (a.type==='highlight'){
+      el.className += ' anno anno-highlight';
+      el.style.background = a.color || STATE.highlightColor;
+      el.style.opacity = a.opacity!=null ? a.opacity : STATE.highlightOpacity;
+    } else if (a.type==='comment'){
+      el.className += ' anno anno-comment';
+      el.textContent = '!';
+      el.onclick = (ev)=>{ ev.stopPropagation(); toggleCommentPopover(p, a, el); };
+    } else if (a.type==='stamp'){
+      el.className += ' anno anno-stamp';
+      el.style.borderColor = a.color; el.style.color = a.color;
+      el.style.fontSize = Math.max(9, a.h*0.32)+'px';
+      el.textContent = a.text;
+    } else if (a.type==='text'){
+      el.className += ' anno anno-text';
+      el.style.fontSize = (a.fontSize||STATE.textSize)+'px';
+      el.style.color = a.color||STATE.textColor;
+      el.contentEditable = false;
+      el.textContent = a.text||'';
+      el.ondblclick = (ev)=>{ ev.stopPropagation(); startEditAnnoText(p,a,el); };
+    } else if (a.type==='signature'){
+      el.className += ' anno anno-signature';
+      const img = document.createElement('img'); img.src = a.dataURL; el.appendChild(img);
+    }
+    el.addEventListener('mousedown', (ev)=>onAnnoMouseDown(ev, p, a));
+    layer.appendChild(el);
+  });
+  const pendingCount = p.annos.filter(a=>a.type==='redact' && !a.applied).length;
+  if (p.id===STATE.activePageId){
+    $('ro-pending').textContent = pendingCount;
+    $('sb-redotxt').textContent = pendingCount + ' pending redaction' + (pendingCount===1?'':'s');
+    $('sb-redotdot').classList.toggle('hot', pendingCount>0);
+  }
+}
+
+function renderThumbnails(){
+  const wrap = $('thumbs'); wrap.innerHTML = '';
+  STATE.pages.forEach((p, idx)=>{
+    const t = document.createElement('div');
+    t.className = 'thumb' + (p.id===STATE.activePageId?' active':'');
+    t.draggable = true;
+    t.dataset.pageId = p.id;
+    t.onclick = ()=>gotoPage(idx);
+    t.ondragstart = (ev)=>{ ev.dataTransfer.setData('text/plain', p.id); };
+    t.ondragover = (ev)=>{ ev.preventDefault(); t.classList.add('dragover'); };
+    t.ondragleave = ()=> t.classList.remove('dragover');
+    t.ondrop = (ev)=>{ ev.preventDefault(); t.classList.remove('dragover'); reorderPage(ev.dataTransfer.getData('text/plain'), p.id); };
+
+    const cv = document.createElement('canvas');
+    const disp = pageDisplayDims(p);
+    const tw = 176, th = Math.round(tw * disp.h/disp.w);
+    cv.width = tw; cv.height = th;
+    drawThumb(cv, p);
+
+    const foot = document.createElement('div'); foot.className = 'thumb-foot';
+    const num = document.createElement('span'); num.className = 'thumb-num'; num.textContent = 'Page '+(idx+1);
+    const actions = document.createElement('div'); actions.className = 'thumb-actions';
+    actions.innerHTML = `
+      <button onclick="event.stopPropagation();duplicatePage('${p.id}')" title="Duplicate"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="1"/><rect x="4" y="4" width="12" height="12" rx="1"/></svg></button>
+      <button onclick="event.stopPropagation();rotatePage('${p.id}',90)" title="Rotate"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 1 3 6.7M3 12V6M3 12h6"/></svg></button>
+      <button onclick="event.stopPropagation();deletePage('${p.id}')" title="Delete"><svg viewBox="0 0 24 24"><path d="M5 7h14M9 7V5h6v2M7 7l1 13h8l1-13"/></svg></button>`;
+    foot.appendChild(num); foot.appendChild(actions);
+    t.appendChild(cv); t.appendChild(foot);
+    wrap.appendChild(t);
+  });
+  const addBtn = document.createElement('div');
+  addBtn.className = 'addpage'; addBtn.textContent = '+  Insert page';
+  addBtn.onclick = addBlankPage;
+  wrap.appendChild(addBtn);
+}
+
+function drawThumb(cv, p){
+  const ctx = cv.getContext('2d');
+  const w = cv.width, h = cv.height;
+  ctx.fillStyle = '#fff'; ctx.fillRect(0,0,w,h);
+  const srcCanvas = p.pdfPageRef ? document.querySelector('#page-'+p.id+' canvas.pdf-canvas') : null;
+  if (srcCanvas && srcCanvas.width){
+    try { ctx.drawImage(srcCanvas, 0, 0, w, h); } catch(e){}
+  } else {
+    // stylised sketch — same spirit as the KADsuite landing-card previews
+    ctx.fillStyle = '#e11330'; ctx.fillRect(0,0,w, h*0.10);
+    ctx.fillStyle = '#c9c9d2';
+    let y = h*0.20;
+    const lines = p.isSample ? (p.sampleIdx===0?[0.7,0.9,0.85,0.4,0.9,0.6,0.9,0.3]:[0.6,0.9,0.5,0.9,0.4,0.9,0.7]) : [0.3];
+    lines.forEach(frac=>{
+      ctx.fillRect(w*0.10, y, w*0.80*frac, h*0.022);
+      y += h*0.052;
+    });
+  }
+  // reflect applied redactions on the thumb
+  ctx.fillStyle = '#0a0a0a';
+  p.annos.filter(a=>a.type==='redact' && a.applied).forEach(a=>{
+    ctx.fillRect(a.x/p.w*w, a.y/p.h*h, a.w/p.w*w, a.h/p.h*h);
+  });
+  ctx.strokeStyle = 'rgba(0,0,0,0.12)'; ctx.strokeRect(0.5,0.5,w-1,h-1);
+}
+
+function drawRuler(){
+  const c = $('ruler-c'); if (!c) return;
+  const stageW = $('scroll').clientWidth;
+  c.width = stageW; c.height = 18;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0,0,c.width,c.height);
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.font = '8px monospace';
+  const p = pageById(STATE.activePageId);
+  if (!p) return;
+  const disp = pageDisplayDims(p);
+  const pageW = disp.w*STATE.zoom;
+  const left = (stageW - pageW)/2 - $('scroll').scrollLeft;
+  const stepPt = 72; // 1 inch in pt-px terms (96px = 1in at zoom 1)
+  for (let x=0; x <= disp.w; x += 96){
+    const px = left + x*STATE.zoom;
+    if (px < -10 || px > stageW+10) continue;
+    ctx.fillRect(px, 10, 1, 8);
+    ctx.fillText(String(Math.round(x/96)), px+2, 9);
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   NAV / ZOOM
+   ═══════════════════════════════════════════════════════════════════════ */
+function updateNavReadouts(){
+  const idx = activePageIdx();
+  $('pg-input').value = idx+1;
+  $('pg-total').textContent = STATE.pages.length;
+  $('sb-page').textContent = idx+1;
+  $('sb-total').textContent = STATE.pages.length;
+  $('zoom-val').textContent = Math.round(STATE.zoom*100)+'%';
+  $('sb-zoom').textContent = Math.round(STATE.zoom*100)+'%';
+  $('sb-tool').textContent = STATE.tool.charAt(0).toUpperCase()+STATE.tool.slice(1);
+  $('ro-name').textContent = STATE.filename + '.pdf';
+  $('ro-pages').textContent = STATE.pages.length + ' page' + (STATE.pages.length===1?'':'s');
+  $('ro-size').textContent = (STATE.isRealPDF? '~'+Math.max(1,Math.round((STATE.pdfBytes?.byteLength||0)/1024))+' KB' : 'Unsaved') + ' · PDF 1.7';
+  $('docname').textContent = STATE.filename;
+  $('tab-name').textContent = STATE.filename + '.pdf';
+  drawRuler();
+}
+function gotoPage(idx){
+  idx = clamp(idx, 0, STATE.pages.length-1);
+  const p = STATE.pages[idx]; if (!p) return;
+  STATE.activePageId = p.id;
+  $$('.page-box').forEach(b=>b.classList.remove('selected'));
+  const box = $('box-'+p.id); if (box){ box.classList.add('selected'); box.scrollIntoView({behavior:'smooth', block:'start'}); }
+  renderThumbnails();
+  updateNavReadouts();
+  renderAnnotations(p);
+}
+function zoomBy(d){ setZoom(clamp(STATE.zoom + d, 0.25, 3)); }
+function setZoom(z){
+  STATE.zoom = clamp(z, 0.25, 3);
+  STATE.pages.forEach(p=>{
+    const disp = pageDisplayDims(p);
+    const box = $('box-'+p.id); const surf = $('page-'+p.id);
+    if (box){ box.style.width=(disp.w*STATE.zoom)+'px'; box.style.height=(disp.h*STATE.zoom)+'px'; }
+    if (surf){
+      let t = `scale(${STATE.zoom}) rotate(${p.rotation}deg)`;
+      if (p.rotation===90) t = `translateX(${p.h*STATE.zoom}px) rotate(90deg) scale(${STATE.zoom})`;
+      if (p.rotation===180) t = `translate(${p.w*STATE.zoom}px, ${p.h*STATE.zoom}px) rotate(180deg) scale(${STATE.zoom})`;
+      if (p.rotation===270) t = `translateY(${p.w*STATE.zoom}px) rotate(270deg) scale(${STATE.zoom})`;
+      surf.style.transform = t;
+    }
+  });
+  updateNavReadouts();
+}
+function fitWidth(){
+  const p = pageById(STATE.activePageId); if (!p) return;
+  const disp = pageDisplayDims(p);
+  const avail = $('scroll').clientWidth - 48;
+  setZoom(clamp(avail/disp.w, 0.25, 3));
+}
+function toggleRuler(){
+  STATE.ruler = !STATE.ruler;
+  $('stage').classList.toggle('no-ruler', !STATE.ruler);
+  $('m-ruler').classList.toggle('on', STATE.ruler);
+}
+function togglePanel(side){
+  const el = $(side);
+  if (window.innerWidth <= 1100){ el.classList.toggle('open'); return; }
+  el.style.display = el.style.display==='none' ? '' : 'none';
+}
+function toggleDrawer(side){
+  $(side).classList.toggle('open');
+  const other = side==='left' ? 'right' : 'left';
+  $(other).classList.remove('open');
+}
+function setLeftMode(mode){
+  STATE.leftMode = mode;
+  $('lm-pages').classList.toggle('on', mode==='pages');
+  $('lm-tools').classList.toggle('on', mode==='tools');
+  $('thumbs').style.display = mode==='pages' ? '' : 'none';
+  $('toollist').style.display = mode==='tools' ? '' : 'none';
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   TOOLS
+   ═══════════════════════════════════════════════════════════════════════ */
+const CURSORS = {
+  select:'default', edit:'text', addtext:'text', highlight:'crosshair',
+  redact:'crosshair', whiteout:'crosshair', stamp:'copy', signature:'copy',
+  comment:'copy', crop:'crosshair'
+};
+function setTool(tool){
+  STATE.tool = tool;
+  STATE.selectedAnno = null;
+  $$('.tbtn').forEach(b=>b.classList.toggle('on', b.dataset.tool===tool));
+  $$('.trow').forEach(b=>b.classList.toggle('on', b.dataset.tool===tool));
+  renderPropertyPanel();
+  updateNavReadouts();
+  applyToolCursors();
+  STATE.pages.forEach(renderAnnotations);
+}
+function applyToolCursors(){
+  $$('.page-surface').forEach(s=>{ s.style.cursor = CURSORS[STATE.tool]||'default'; });
+}
+
+function renderPropertyPanel(){
+  const body = $('propbody'); const hint = $('prop-hint');
+  hint.textContent = STATE.tool;
+  const t = STATE.tool;
+  if (t==='redact'){
+    body.innerHTML = `
+      <div class="fld"><label>Fill</label><div class="readout">Solid black — permanent once applied</div></div>
+      <div class="pcap">Drag a box over content to mark it. Nothing is removed until you press <b>Apply Redactions</b> on the right.</div>`;
+  } else if (t==='highlight'){
+    body.innerHTML = `
+      <div class="fld"><label>Colour</label><div class="swrow" id="hl-swatches"></div></div>
+      <div class="fld"><label>Opacity</label><div class="rangewrap"><input type="range" min="10" max="80" value="${Math.round(STATE.highlightOpacity*100)}" oninput="STATE.highlightOpacity=this.value/100; this.nextElementSibling.textContent=this.value+'%'"><span>${Math.round(STATE.highlightOpacity*100)}%</span></div></div>`;
+    const colors = ['#ffd400','#5cff9d','#ff8fd6','#ff3049'];
+    const sw = $('hl-swatches');
+    colors.forEach(c=>{
+      const b = document.createElement('button'); b.className='sw'+(STATE.highlightColor===c?' on':'');
+      b.style.background=c; b.onclick=()=>{ STATE.highlightColor=c; renderPropertyPanel(); };
+      sw.appendChild(b);
+    });
+  } else if (t==='whiteout'){
+    body.innerHTML = `<div class="pcap">Drag a box to paint over content with a solid white patch — useful for erasing marks before adding your own.</div>`;
+  } else if (t==='addtext' || t==='edit'){
+    body.innerHTML = `
+      <div class="fld"><label>Size</label><input type="number" min="8" max="48" value="${STATE.textSize}" oninput="STATE.textSize=parseInt(this.value,10)||14"></div>
+      <div class="fld"><label>Colour</label><div class="swrow" id="tx-swatches"></div></div>
+      <div class="pcap">${t==='edit' ? 'Double-click existing text on the page to edit it in place.' : 'Click on the page to drop a new text box, then type.'}</div>`;
+    const colors = ['#18181c','#e01130','#1a5fd4','#0a8a4a'];
+    const sw = $('tx-swatches');
+    colors.forEach(c=>{
+      const b=document.createElement('button'); b.className='sw'+(STATE.textColor===c?' on':'');
+      b.style.background=c; b.onclick=()=>{ STATE.textColor=c; renderPropertyPanel(); };
+      sw.appendChild(b);
+    });
+  } else if (t==='stamp'){
+    body.innerHTML = `
+      <div class="fld"><label>Preset</label><div class="stampswatch" id="stamp-presets"></div></div>
+      <div class="pcap">Click on the page to place the stamp.</div>`;
+    const presets = ['APPROVED','CONFIDENTIAL','DRAFT','VOID','PAID'];
+    const wrap = $('stamp-presets');
+    presets.forEach(p=>{
+      const b=document.createElement('button'); b.textContent=p; b.className=(STATE.stampPreset===p?'on':'');
+      b.onclick=()=>{ STATE.stampPreset=p; renderPropertyPanel(); };
+      wrap.appendChild(b);
+    });
+  } else if (t==='signature'){
+    let html = `<button class="pbtn primary" onclick="open_('modal-sig');initSigPad();">Draw New Signature</button>`;
+    if (STATE.savedSignatures.length){
+      html += `<div class="pcap">Saved — click one, then click the page to place it.</div>`;
+      STATE.savedSignatures.forEach((s,i)=>{
+        html += `<div class="sigcard${STATE.activeSigIdx===i?' on':''}" onclick="pickSignature(${i})"><img src="${s}"></div>`;
+      });
+    } else {
+      html += `<div class="pcap">No saved signatures yet.</div>`;
+    }
+    body.innerHTML = html;
+  } else if (t==='comment'){
+    body.innerHTML = `<div class="pcap">Click on the page to drop a sticky note, then type your comment.</div>`;
+  } else if (t==='crop'){
+    body.innerHTML = `
+      <div class="pcap">Drag a box for the new page bounds.</div>
+      <button class="pbtn" onclick="applyCrop()">Apply Crop</button>
+      <button class="pbtn" onclick="resetCrop()">Reset Crop</button>`;
+  } else {
+    const sel = STATE.selectedAnno;
+    if (sel){
+      const p = pageById(sel.pageId); const a = p && p.annos.find(x=>x.id===sel.annoId);
+      if (a){
+        body.innerHTML = `
+          <div class="readout">Selected: <b>${a.type}</b></div>
+          <button class="pbtn" style="border-color:rgba(255,68,102,0.4);color:var(--red)" onclick="deleteSelected()">Delete Mark</button>`;
+        return;
+      }
+    }
+    body.innerHTML = `<div class="pcap">Select a mark on the page to edit it, or pick a tool on the left.</div>`;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   PAGE-SURFACE INTERACTION — drawing marks, placing objects
+   ═══════════════════════════════════════════════════════════════════════ */
+function wirePageInteractions(surf, p){
+  surf.addEventListener('mousedown', (ev)=>onSurfaceMouseDown(ev, surf, p));
+  surf.addEventListener('click', (ev)=>onSurfaceClick(ev, surf, p));
+}
+function toUnscaled(surf, ev){
+  const rect = surf.getBoundingClientRect();
+  return { x:(ev.clientX-rect.left)/STATE.zoom, y:(ev.clientY-rect.top)/STATE.zoom };
+}
+function rotationOk(p){
+  if (p.rotation !== 0){ toast('Rotate the page back to 0° to add marks here'); return false; }
+  return true;
+}
+
+function onSurfaceMouseDown(ev, surf, p){
+  if (ev.target.closest('.anno')) return; // handled by anno's own handler
+  gotoPage(STATE.pages.indexOf(p));
+  const drag = ['redact','highlight','whiteout','crop'].includes(STATE.tool);
+  if (!drag) return;
+  if (!rotationOk(p)) return;
+  const start = toUnscaled(surf, ev);
+  const ghost = document.createElement('div');
+  ghost.className = STATE.tool==='crop' ? 'crop-ghost' : 'drag-ghost';
+  surf.appendChild(ghost);
+  STATE.drag = { surf, p, start, ghost };
+  const move = (mv)=>{
+    const cur = toUnscaled(surf, mv);
+    const x = Math.min(start.x,cur.x), y = Math.min(start.y,cur.y);
+    const w = Math.abs(cur.x-start.x), h = Math.abs(cur.y-start.y);
+    ghost.style.left=(x*STATE.zoom)+'px'; ghost.style.top=(y*STATE.zoom)+'px';
+    ghost.style.width=(w*STATE.zoom)+'px'; ghost.style.height=(h*STATE.zoom)+'px';
+    STATE.drag.rect = {x,y,w,h};
+  };
+  const up = ()=>{
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    ghost.remove();
+    const r = STATE.drag && STATE.drag.rect;
+    STATE.drag = null;
+    if (!r || r.w<6 || r.h<6) return;
+    finishDrag(p, r);
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+}
+
+function finishDrag(p, r){
+  if (STATE.tool==='crop'){ p.crop = r; markDirty(); toast('Crop box set — Apply Crop to confirm'); redrawCropGhost(p); return; }
+  const type = STATE.tool;
+  const anno = { id:uid(), type, x:r.x, y:r.y, w:r.w, h:r.h, applied:false };
+  if (type==='highlight'){ anno.color = STATE.highlightColor; anno.opacity = STATE.highlightOpacity; }
+  p.annos.push(anno);
+  pushHistory({ action:'add', pageId:p.id, annoId:anno.id });
+  markDirty(); renderAnnotations(p); renderThumbnails();
+}
+
+function onSurfaceClick(ev, surf, p){
+  if (ev.target.closest('.anno')) return;
+  if (!['addtext','stamp','signature','comment'].includes(STATE.tool)) return;
+  if (!rotationOk(p)) return;
+  const pos = toUnscaled(surf, ev);
+  if (STATE.tool==='addtext'){
+    const anno = { id:uid(), type:'text', x:pos.x, y:pos.y-10, w:220, h:28, text:'', fontSize:STATE.textSize, color:STATE.textColor };
+    p.annos.push(anno); markDirty(); renderAnnotations(p);
+    const el = document.querySelector(`#anno-${p.id} [data-anno-id="${anno.id}"]`);
+    setTimeout(()=> startEditAnnoText(p, anno, document.querySelector(`#anno-${p.id} [data-anno-id="${anno.id}"]`)), 10);
+  } else if (STATE.tool==='stamp'){
+    const w=150,h=48;
+    const anno = { id:uid(), type:'stamp', x:pos.x-w/2, y:pos.y-h/2, w, h, text:STATE.stampPreset, color:STATE.stampColor };
+    p.annos.push(anno); markDirty(); renderAnnotations(p); renderThumbnails();
+  } else if (STATE.tool==='signature'){
+    const sig = STATE.savedSignatures[STATE.activeSigIdx ?? STATE.savedSignatures.length-1];
+    if (!sig){ open_('modal-sig'); initSigPad(); toast('Draw a signature first'); return; }
+    const w=160,h=60;
+    const anno = { id:uid(), type:'signature', x:pos.x-w/2, y:pos.y-h/2, w, h, dataURL:sig };
+    p.annos.push(anno); markDirty(); renderAnnotations(p); renderThumbnails();
+  } else if (STATE.tool==='comment'){
+    const anno = { id:uid(), type:'comment', x:pos.x-11, y:pos.y-11, w:22, h:22, text:'' };
+    p.annos.push(anno); markDirty(); renderAnnotations(p);
+    setTimeout(()=>{
+      const el = document.querySelector(`#anno-${p.id} [data-anno-id="${anno.id}"]`);
+      if (el) toggleCommentPopover(p, anno, el);
+    }, 10);
+  }
+}
+
+function redrawCropGhost(p){
+  const surf = $('page-'+p.id); if (!surf) return;
+  surf.querySelectorAll('.crop-mask,.crop-ghost.persist').forEach(e=>e.remove());
+  if (!p.crop) return;
+  const c = p.crop;
+  const mask = document.createElement('div'); mask.className='crop-mask';
+  mask.style.clipPath = `polygon(0 0,100% 0,100% 100%,0 100%,0 0, ${c.x}px ${c.y}px, ${c.x}px ${c.y+c.h}px, ${c.x+c.w}px ${c.y+c.h}px, ${c.x+c.w}px ${c.y}px, ${c.x}px ${c.y}px)`;
+  surf.appendChild(mask);
+}
+function applyCrop(){
+  const p = pageById(STATE.activePageId); if (!p || !p.crop){ toast('Draw a crop box first'); return; }
+  const c = p.crop;
+  p.w = Math.round(c.w); p.h = Math.round(c.h);
+  p.annos.forEach(a=>{ a.x -= c.x; a.y -= c.y; });
+  p.cropApplied = true; p.crop = null;
+  markDirty(); renderPages(); renderThumbnails();
+  toast('Crop applied');
+}
+function resetCrop(){ const p=pageById(STATE.activePageId); if (p){ p.crop=null; redrawCropGhost(p); } }
+
+/* selecting / moving / deleting annotations */
+function onAnnoMouseDown(ev, p, a){
+  ev.stopPropagation();
+  if (a.type==='comment'){ return; } // handled by its own click
+  if (STATE.tool!=='select'){ return; }
+  STATE.selectedAnno = { pageId:p.id, annoId:a.id };
+  renderAnnotations(p); renderPropertyPanel();
+  const surf = $('page-'+p.id);
+  const start = toUnscaled(surf, ev);
+  const orig = { x:a.x, y:a.y };
+  const move = (mv)=>{
+    const cur = toUnscaled(surf, mv);
+    a.x = orig.x + (cur.x-start.x); a.y = orig.y + (cur.y-start.y);
+    renderAnnotations(p);
+  };
+  const up = ()=>{
+    document.removeEventListener('mousemove', move);
+    document.removeEventListener('mouseup', up);
+    markDirty(); renderThumbnails();
+  };
+  document.addEventListener('mousemove', move);
+  document.addEventListener('mouseup', up);
+}
+function deleteSelected(){
+  const sel = STATE.selectedAnno; if (!sel) { toast('Nothing selected'); return; }
+  const p = pageById(sel.pageId); if (!p) return;
+  p.annos = p.annos.filter(a=>a.id!==sel.annoId);
+  STATE.selectedAnno = null;
+  markDirty(); renderAnnotations(p); renderThumbnails(); renderPropertyPanel();
+}
+function clearAllAnnos(){
+  const p = pageById(STATE.activePageId); if (!p) return;
+  if (!p.annos.length){ toast('No marks on this page'); return; }
+  p.annos = [];
+  markDirty(); renderAnnotations(p); renderThumbnails();
+  toast('Cleared marks on page');
+}
+
+/* editable text (added text + sample editable-text spans) */
+function startEditAnnoText(p, a, el){
+  if (!el) return;
+  el.contentEditable = true; el.textContent = a.text || '';
+  el.focus();
+  const range = document.createRange(); range.selectNodeContents(el);
+  const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+  const finish = ()=>{
+    a.text = el.textContent; el.contentEditable = false;
+    el.removeEventListener('blur', finish);
+    markDirty(); renderAnnotations(p); renderThumbnails();
+  };
+  el.addEventListener('blur', finish);
+}
+document.addEventListener('dblclick', (ev)=>{
+  if (STATE.tool!=='edit') return;
+  const target = ev.target.closest('.editable-text');
+  if (!target) return;
+  target.contentEditable = true; target.focus();
+  target.dataset.edited = '1';
+  const finish = ()=>{ target.contentEditable = false; target.removeEventListener('blur', finish); markDirty(); };
+  target.addEventListener('blur', finish);
+});
+
+/* comment popover */
+function toggleCommentPopover(p, a, pinEl){
+  const layer = $('anno-'+p.id);
+  const existing = layer.querySelector('.commentpop');
+  if (existing){ existing.remove(); if (existing.dataset.for===a.id) return; }
+  const pop = document.createElement('div');
+  pop.className = 'commentpop'; pop.dataset.for = a.id;
+  pop.style.left = (a.x+24)+'px'; pop.style.top = a.y+'px';
+  pop.innerHTML = `<textarea placeholder="Add a note&#8230;">${esc(a.text||'')}</textarea>
+    <div class="cprow"><button class="del" onclick="deleteComment('${p.id}','${a.id}')">Delete</button><button onclick="saveComment('${p.id}','${a.id}',this)">Save</button></div>`;
+  layer.appendChild(pop);
+  pop.querySelector('textarea').focus();
+}
+function saveComment(pageId, annoId, btn){
+  const p = pageById(pageId); const a = p.annos.find(x=>x.id===annoId);
+  const ta = btn.closest('.commentpop').querySelector('textarea');
+  a.text = ta.value; markDirty();
+  btn.closest('.commentpop').remove();
+  toast('Comment saved');
+}
+function deleteComment(pageId, annoId){
+  const p = pageById(pageId); p.annos = p.annos.filter(a=>a.id!==annoId);
+  markDirty(); renderAnnotations(p);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   REDACTION — the honest, two-step version
+   ═══════════════════════════════════════════════════════════════════════ */
+function applyRedactions(){
+  const p = pageById(STATE.activePageId); if (!p) return;
+  const pending = p.annos.filter(a=>a.type==='redact' && !a.applied);
+  if (!pending.length){ toast('No pending redactions on this page'); return; }
+  const surf = $('page-'+p.id);
+  pending.forEach(a=>{
+    a.applied = true;
+    // strip fully-covered editable text runs beneath the mark — the part
+    // that makes this a redaction rather than a black rectangle.
+    if (surf){
+      surf.querySelectorAll('[data-redactable="true"]').forEach(el=>{
+        const b = elBoundsInPage(el, surf);
+        if (rectContains(a, b)) el.textContent = '████████';
+      });
+    }
+  });
+  markDirty(); renderAnnotations(p); renderThumbnails();
+  toast(pending.length + ' redaction' + (pending.length===1?'':'s') + ' applied — covered text removed');
+}
+function elBoundsInPage(el, surf){
+  const er = el.getBoundingClientRect(), sr = surf.getBoundingClientRect();
+  return { x:(er.left-sr.left)/STATE.zoom, y:(er.top-sr.top)/STATE.zoom, w:er.width/STATE.zoom, h:er.height/STATE.zoom };
+}
+function rectContains(outer, inner){
+  return inner.x>=outer.x-2 && inner.y>=outer.y-2 && (inner.x+inner.w)<=(outer.x+outer.w+2) && (inner.y+inner.h)<=(outer.y+outer.h+2);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   PAGE OPS
+   ═══════════════════════════════════════════════════════════════════════ */
+function addBlankPage(){
+  const p = newBlankPageObj();
+  STATE.pages.push(p); STATE.activePageId = p.id;
+  markDirty(); renderPages(); renderThumbnails(); updateNavReadouts();
+  gotoPage(STATE.pages.length-1);
+  toast('Blank page added');
+}
+function duplicateActivePage(){ duplicatePage(STATE.activePageId); }
+function duplicatePage(id){
+  const idx = STATE.pages.findIndex(p=>p.id===id); if (idx<0) return;
+  const src = STATE.pages[idx];
+  const copy = JSON.parse(JSON.stringify({ ...src, pdfPageRef:undefined }));
+  copy.id = uid();
+  copy.annos = copy.annos.map(a=>({ ...a, id:uid() }));
+  if (src.pdfPageRef) copy.pdfPageRef = src.pdfPageRef; // share raster reference for preview
+  STATE.pages.splice(idx+1, 0, copy);
+  markDirty(); renderPages(); renderThumbnails();
+  toast('Page duplicated');
+}
+function deleteActivePage(){ deletePage(STATE.activePageId); }
+function deletePage(id){
+  if (STATE.pages.length<=1){ toast("Can't delete the only page"); return; }
+  const idx = STATE.pages.findIndex(p=>p.id===id); if (idx<0) return;
+  STATE.pages.splice(idx,1);
+  if (STATE.activePageId===id) STATE.activePageId = STATE.pages[Math.max(0,idx-1)].id;
+  markDirty(); renderPages(); renderThumbnails(); updateNavReadouts();
+  toast('Page deleted');
+}
+function rotateActivePage(delta){ rotatePage(STATE.activePageId, delta); }
+function rotatePage(id, delta){
+  const p = pageById(id); if (!p) return;
+  p.rotation = ((p.rotation||0) + delta + 360) % 360;
+  markDirty(); renderPages(); renderThumbnails();
+}
+function reorderPage(draggedId, targetId){
+  if (draggedId===targetId) return;
+  const from = STATE.pages.findIndex(p=>p.id===draggedId);
+  const to = STATE.pages.findIndex(p=>p.id===targetId);
+  if (from<0||to<0) return;
+  const [moved] = STATE.pages.splice(from,1);
+  STATE.pages.splice(to,0,moved);
+  markDirty(); renderThumbnails(); renderPages();
+  toast('Pages reordered');
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   OPEN / NEW
+   ═══════════════════════════════════════════════════════════════════════ */
+function triggerOpen(){ $('file-input').click(); }
+function newBlankDoc(){
+  STATE.filename = 'Untitled'; STATE.isRealPDF=false; STATE.pdfBytes=null; STATE.pdfjsDoc=null;
+  STATE.pages = [newBlankPageObj()];
+  STATE.activePageId = STATE.pages[0].id;
+  markDirty(); renderPages(); renderThumbnails(); updateNavReadouts();
+  toast('New blank document');
+}
+async function onFileChosen(ev){
+  const file = ev.target.files[0]; ev.target.value = '';
+  if (!file) return;
+  if (!/\.pdf$/i.test(file.name)){ toast('Choose a .pdf file'); return; }
+  busy(true, 'Opening PDF…');
+  try {
+    const buf = await file.arrayBuffer();
+    STATE.pdfBytes = buf;
+    STATE.filename = file.name.replace(/\.pdf$/i,'');
+    if (typeof pdfjsLib === 'undefined'){ throw new Error('pdf.js not available'); }
+    if (pdfjsLib.GlobalWorkerOptions && !pdfjsLib.GlobalWorkerOptions.workerSrc){
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+    const doc = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
+    STATE.pdfjsDoc = doc; STATE.isRealPDF = true;
+    STATE.pages = [];
+    for (let i=1;i<=doc.numPages;i++){
+      const pg = await doc.getPage(i);
+      const vp = pg.getViewport({ scale: 1.3333 });
+      STATE.pages.push({ id:uid(), w:vp.width, h:vp.height, rotation:0, annos:[], pdfPageRef:pg, srcIndex:i-1 });
+    }
+    STATE.activePageId = STATE.pages[0].id;
+    markDirty(false); STATE.dirty=false; updateSaveDot();
+    renderPages(); renderThumbnails(); updateNavReadouts();
+    toast('Opened ' + doc.numPages + ' page' + (doc.numPages>1?'s':''));
+  } catch (e){
+    console.error(e);
+    toast('Could not open the PDF engine — check your connection, then try again.');
+  }
+  busy(false);
+}
+async function renderPdfPageToCanvas(p, canvas){
+  try {
+    const vp = p.pdfPageRef.getViewport({ scale: 1.3333 });
+    canvas.width = vp.width; canvas.height = vp.height;
+    const ctx = canvas.getContext('2d');
+    await p.pdfPageRef.render({ canvasContext: ctx, viewport: vp }).promise;
+    renderThumbnails();
+  } catch (e){ console.error(e); }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   SAVE — real PDF out, via pdf-lib
+   ═══════════════════════════════════════════════════════════════════════ */
+async function savePDF(saveAs){
+  if (typeof PDFLib === 'undefined'){ toast('PDF engine unavailable — check your connection'); return; }
+  busy(true, 'Building PDF…');
+  try {
+    let pdfDoc;
+    if (STATE.isRealPDF && STATE.pdfBytes){
+      const src = await PDFLib.PDFDocument.load(STATE.pdfBytes);
+      pdfDoc = await PDFLib.PDFDocument.create();
+      const order = STATE.pages.map(p => p.srcIndex != null ? p.srcIndex : 0);
+      const copied = await pdfDoc.copyPages(src, order);
+      copied.forEach(pg => pdfDoc.addPage(pg));
+    } else {
+      pdfDoc = await PDFLib.PDFDocument.create();
+      STATE.pages.forEach(p => pdfDoc.addPage([p.w*PT_PER_PX, p.h*PT_PER_PX]));
+    }
+    const font = await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
+    const pdfPages = pdfDoc.getPages();
+    for (let i=0;i<STATE.pages.length;i++){
+      const page = pdfPages[i]; if (!page) continue;
+      const p = STATE.pages[i];
+      const { width: pw, height: ph } = page.getSize();
+      const sx = pw / p.w, sy = ph / p.h;
+      for (const a of p.annos){
+        const x = a.x*sx, w = a.w*sx, h = a.h*sy;
+        const y = ph - (a.y*sy) - h;
+        if (a.type==='redact'){
+          page.drawRectangle({ x, y, width:w, height:h, color: PDFLib.rgb(0,0,0) });
+        } else if (a.type==='whiteout'){
+          page.drawRectangle({ x, y, width:w, height:h, color: PDFLib.rgb(1,1,1) });
+        } else if (a.type==='highlight'){
+          const c = hexToRgb01(a.color);
+          page.drawRectangle({ x, y, width:w, height:h, color: PDFLib.rgb(c.r,c.g,c.b), opacity: a.opacity!=null?a.opacity:0.4 });
+        } else if (a.type==='text' && a.text){
+          const c = hexToRgb01(a.color);
+          page.drawText(a.text, { x, y: y+h*0.25, size: (a.fontSize||14)*sy, font, color: PDFLib.rgb(c.r,c.g,c.b) });
+        } else if (a.type==='stamp'){
+          const c = hexToRgb01(a.color);
+          page.drawRectangle({ x, y, width:w, height:h, borderColor: PDFLib.rgb(c.r,c.g,c.b), borderWidth:2, color:undefined, opacity:0 });
+          page.drawText(a.text, { x:x+w*0.08, y:y+h*0.38, size:Math.max(8,h*0.28), font, color: PDFLib.rgb(c.r,c.g,c.b) });
+        } else if (a.type==='signature' && a.dataURL){
+          try {
+            const png = await pdfDoc.embedPng(a.dataURL);
+            page.drawImage(png, { x, y, width:w, height:h });
+          } catch(e){}
+        }
+      }
+      if (p.rotation) page.setRotation(PDFLib.degrees(p.rotation));
+    }
+    const bytes = await pdfDoc.save();
+    download(bytes, (STATE.filename||'Untitled')+'.pdf', 'application/pdf');
+    markDirty(false); STATE.dirty=false; updateSaveDot();
+    toast('PDF saved');
+  } catch (e){
+    console.error(e);
+    toast('Could not build the PDF — see console for details');
+  }
+  busy(false);
+}
+function exportFlatCopy(){ savePDF(); }
+
+/* ════════════════════════════════════════════════════════════════════════
+   EXPORT ▸ KANVAS (.kvs) — real KVS 2.0 schema, page-as-image + live marks
+   ═══════════════════════════════════════════════════════════════════════ */
+function exportKVS(){
+  const sheets = STATE.pages.map((p, idx)=>{
+    let nextId = 1;
+    const objects = [];
+    const srcCanvas = document.querySelector('#page-'+p.id+' canvas.pdf-canvas');
+    if (srcCanvas){
+      try {
+        objects.push({ id: nextId++, type:'image', src: srcCanvas.toDataURL('image/png'),
+          x:0, y:0, w:p.w*PT_PER_PX, h:p.h*PT_PER_PX, layer:1 });
+      } catch(e){}
+    }
+    p.annos.forEach(a=>{
+      const x=a.x*PT_PER_PX, y=a.y*PT_PER_PX, w=a.w*PT_PER_PX, h=a.h*PT_PER_PX;
+      if (a.type==='redact'){
+        objects.push({ id:nextId++, type:'rect', x, y, w, h, color:'#000000', fill:true, stroke:false, opacity:1, layer:1 });
+      } else if (a.type==='whiteout'){
+        objects.push({ id:nextId++, type:'rect', x, y, w, h, color:'#ffffff', fill:true, stroke:false, opacity:1, layer:1 });
+      } else if (a.type==='highlight'){
+        objects.push({ id:nextId++, type:'rect', x, y, w, h, color:a.color||'#ffd400', fill:true, stroke:false, opacity:a.opacity!=null?a.opacity:0.4, layer:1 });
+      } else if (a.type==='text' || a.type==='stamp'){
+        objects.push({ id:nextId++, type:'text', x, y:y+h*0.7, text:a.text||'', size:(a.fontSize||14), color:a.color||'#18181c', layer:1 });
+      } else if (a.type==='signature' && a.dataURL){
+        objects.push({ id:nextId++, type:'image', src:a.dataURL, x, y, w, h, layer:1 });
+      }
+    });
+    return {
+      name: 'Page ' + (idx+1), paper:'custom', orient: p.h>=p.w ? 'p':'l',
+      objects, layers:[{ id:1, name:'Page', visible:true, locked:false }],
+      activeLayer:1, nextId, cam:null,
+      ref: { w:p.w*PT_PER_PX, h:p.h*PT_PER_PX }, artK:1, gridOn:false, gridSize:null,
+    };
+  });
+  const doc = {
+    format:'KVS', version:'2.0', generator:'KOMBINER 1.0',
+    saved: new Date().toISOString(), mode:'kanvas', activeSheet: activePageIdx(),
+    kreate: { objects:[], layers:[{id:1,name:'Space',visible:true}], activeLayer:1, nextId:1, cam:null },
+    sheets,
+    view: { grid:false, snap:true, rulers:true },
+    brush: { color:'#e01130', size:4, opacity:1, taper:0.5, smooth:0.5, alpha:1, kind:'ink', input:'mouse' },
+    dimStandard: null,
+  };
+  download(JSON.stringify(doc, null, 2), (STATE.filename||'Untitled')+'.kvs', 'application/octet-stream');
+  toast('Exported ' + sheets.length + ' sheet' + (sheets.length>1?'s':'') + ' to KANVAS (.kvs)');
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   EXPORT ▸ DOK — reflow copy of the text you touched, as import-ready HTML
+   ═══════════════════════════════════════════════════════════════════════ */
+function exportDOKHtml(){
+  let body = '';
+  STATE.pages.forEach((p, idx)=>{
+    body += `<h2>Page ${idx+1}</h2>`;
+    const surf = $('page-'+p.id);
+    if (surf){
+      surf.querySelectorAll('.editable-text').forEach(el=>{
+        body += `<p>${esc(el.textContent)}</p>`;
+      });
+    }
+    p.annos.filter(a=>a.type==='text' && a.text).forEach(a=>{ body += `<p>${esc(a.text)}</p>`; });
+    p.annos.filter(a=>a.type==='comment' && a.text).forEach(a=>{ body += `<p><em>Comment: ${esc(a.text)}</em></p>`; });
+  });
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(STATE.filename)}</title></head><body>${body||'<p></p>'}</body></html>`;
+  download(html, (STATE.filename||'Untitled')+'.html', 'text/html');
+  toast('Exported reflow copy — open with DOK ▸ File ▸ Import ▸ HTML or Text');
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   SIGNATURE PAD
+   ═══════════════════════════════════════════════════════════════════════ */
+let sigCtx = null, sigDrawing = false, sigHasInk = false;
+function initSigPad(){
+  const cv = $('sigpad');
+  cv.width = cv.clientWidth * 2; cv.height = cv.clientHeight * 2;
+  sigCtx = cv.getContext('2d');
+  sigCtx.scale(2,2);
+  sigCtx.lineWidth = 2.2; sigCtx.lineCap = 'round'; sigCtx.lineJoin='round'; sigCtx.strokeStyle = '#141018';
+  sigHasInk = false;
+  const pos = (ev)=>{
+    const r = cv.getBoundingClientRect();
+    const t = ev.touches ? ev.touches[0] : ev;
+    return { x:(t.clientX-r.left), y:(t.clientY-r.top) };
+  };
+  const start = (ev)=>{ ev.preventDefault(); sigDrawing = true; const p = pos(ev); sigCtx.beginPath(); sigCtx.moveTo(p.x,p.y); };
+  const move = (ev)=>{ if (!sigDrawing) return; ev.preventDefault(); const p = pos(ev); sigCtx.lineTo(p.x,p.y); sigCtx.stroke(); sigHasInk = true; };
+  const end = ()=>{ sigDrawing = false; };
+  cv.onmousedown = start; cv.onmousemove = move; window.addEventListener('mouseup', end);
+  cv.ontouchstart = start; cv.ontouchmove = move; cv.ontouchend = end;
+}
+function clearSigPad(){ if (!sigCtx) return; const cv=$('sigpad'); sigCtx.clearRect(0,0,cv.width,cv.height); sigHasInk=false; }
+function saveSignature(){
+  if (!sigHasInk){ toast('Draw a signature first'); return; }
+  const url = $('sigpad').toDataURL('image/png');
+  STATE.savedSignatures.push(url);
+  STATE.activeSigIdx = STATE.savedSignatures.length-1;
+  close_('modal-sig');
+  setTool('signature');
+  toast('Signature saved — click the page to place it');
+}
+function pickSignature(i){ STATE.activeSigIdx = i; renderPropertyPanel(); }
+
+/* ════════════════════════════════════════════════════════════════════════
+   MENUS / MISC UI
+   ═══════════════════════════════════════════════════════════════════════ */
+function menuDo(fn){ closeAllMenus(); fn(); }
+function closeAllMenus(){ $$('.mdrop').forEach(d=>d.classList.remove('on')); $$('.mbar-item').forEach(i=>i.classList.remove('on')); }
+$$('.mbar-item').forEach(item=>{
+  item.addEventListener('click', (ev)=>{
+    ev.stopPropagation();
+    const name = item.dataset.menu; const dd = $('dd-'+name);
+    const isOpen = dd.classList.contains('on');
+    closeAllMenus();
+    if (!isOpen){
+      item.classList.add('on'); dd.classList.add('on');
+      const r = item.getBoundingClientRect();
+      dd.style.left = Math.min(r.left, window.innerWidth-dd.offsetWidth-10)+'px';
+      dd.style.top = (r.bottom+2)+'px';
+    }
+  });
+});
+document.addEventListener('click', closeAllMenus);
+document.addEventListener('click', (ev)=>{
+  if (!ev.target.closest('.commentpop') && !ev.target.closest('.anno-comment')){
+    $$('.commentpop').forEach(p=>p.remove());
+  }
+});
+
+function renameDoc(){
+  const name = prompt('Document name', STATE.filename);
+  if (name){ STATE.filename = name.replace(/\.pdf$/i,''); updateNavReadouts(); markDirty(); }
+}
+function openFind(){ toast('Find in document — coming to a later build'); }
+function openShortcuts(){ open_('modal-kbd'); }
+function openAbout(){ open_('modal-about'); }
+
+function markDirty(force){
+  if (force===false) return;
+  STATE.dirty = true; updateSaveDot();
+}
+function markClean(){ STATE.dirty=false; updateSaveDot(); }
+function updateSaveDot(){
+  $('docname').classList.toggle('dirty', STATE.dirty);
+  $('tab-dot').classList.toggle('on', STATE.dirty);
+  $('sb-savedot').className = 'sb-dot ' + (STATE.dirty ? 'hot' : 'ok');
+  $('sb-savetxt').textContent = STATE.dirty ? 'Unsaved changes' : 'Saved';
+}
+
+function pushHistory(entry){ STATE.history.push(entry); if (STATE.history.length>200) STATE.history.shift(); }
+function undo(){
+  const entry = STATE.history.pop();
+  if (!entry){ toast('Nothing to undo'); return; }
+  if (entry.action==='add'){
+    const p = pageById(entry.pageId); if (p){ p.annos = p.annos.filter(a=>a.id!==entry.annoId); renderAnnotations(p); renderThumbnails(); }
+  }
+  markDirty();
+}
+
+window.addEventListener('resize', ()=>{ drawRuler(); });
+$('scroll').addEventListener('scroll', ()=>{ drawRuler(); });
+
+document.addEventListener('keydown', (ev)=>{
+  if (document.activeElement && ['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) {
+    if (ev.key==='Escape') document.activeElement.blur();
+    return;
+  }
+  if (document.activeElement && document.activeElement.isContentEditable) return;
+  const k = ev.key.toLowerCase();
+  if (ev.ctrlKey || ev.metaKey){
+    if (k==='o'){ ev.preventDefault(); triggerOpen(); }
+    else if (k==='s'){ ev.preventDefault(); savePDF(); }
+    else if (k==='n'){ ev.preventDefault(); newBlankDoc(); }
+    else if (k==='='||k==='+'){ ev.preventDefault(); zoomBy(0.1); }
+    else if (k==='-'){ ev.preventDefault(); zoomBy(-0.1); }
+    else if (k==='0'){ ev.preventDefault(); setZoom(1); }
+    else if (k==='9'){ ev.preventDefault(); fitWidth(); }
+    else if (k==='d'){ ev.preventDefault(); duplicateActivePage(); }
+    return;
+  }
+  if (ev.key==='Escape'){ closeAllMenus(); STATE.selectedAnno=null; STATE.pages.forEach(renderAnnotations); return; }
+  if (ev.key==='Delete' || ev.key==='Backspace'){ if (STATE.selectedAnno){ ev.preventDefault(); deleteSelected(); } return; }
+  if (ev.key==='ArrowDown'){ gotoPage(activePageIdx()+1); return; }
+  if (ev.key==='ArrowUp'){ gotoPage(activePageIdx()-1); return; }
+  if (ev.key==='?'){ openShortcuts(); return; }
+  const map = { v:'select', e:'edit', t:'addtext', h:'highlight', r:'redact', w:'whiteout', s:'stamp', g:'signature', c:'comment' };
+  if (map[k]){ setTool(map[k]); }
+});
+
+/* ════════════════════════════════════════════════════════════════════════
+   BOOT
+   ═══════════════════════════════════════════════════════════════════════ */
+initSampleDoc();
+renderPages();
+renderThumbnails();
+updateNavReadouts();
+setTool('select');
+toast('Sample document loaded — open a PDF from File ▸ Open to work on your own');
+</script>
+</body>
+</html>
