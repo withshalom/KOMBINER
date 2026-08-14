@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-  KOMBINER™ — Kernel-Oriented Markup & Binding Engine (PDF)
+  KOMBINER™ — Kernel-Oriented Markup, Binding & Interactive Notation Engine for Revision
   Copyright (C) 2026 KADsuite / withshalom
 
   This program is free software: you can redistribute it and/or modify
@@ -515,7 +515,7 @@ kbd { font-family:var(--fm); font-size:9.5px; padding:2px 6px; border-radius:4px
       <div class="brand-mark">KB</div>
       <div class="brand-txt">
         <div class="brand-name">KOMBINER</div>
-        <div class="brand-sub">PDF Kernel</div>
+        <div class="brand-sub">Kernel-Oriented Markup, Binding &amp; Interactive Notation Engine for Revision</div>
       </div>
     </div>
 
@@ -529,6 +529,10 @@ kbd { font-family:var(--fm); font-size:9.5px; padding:2px 6px; border-radius:4px
           <div class="msep"></div>
           <div class="mrow" onclick="menuDo(savePDF)"><span class="mc">&#10003;</span><span>Save PDF</span><span class="mk">Ctrl S</span></div>
           <div class="mrow" onclick="menuDo(()=>savePDF(true))"><span class="mc">&#10003;</span><span>Save PDF As&#8230;</span><span class="mk">Ctrl &#8679; S</span></div>
+          <div class="msep"></div>
+          <div class="mlabel">Project</div>
+          <div class="mrow" onclick="menuDo(triggerOpenProject)"><span class="mc">&#10003;</span><span>Open Project&#8230;</span><span class="mk">.kmb</span></div>
+          <div class="mrow" onclick="menuDo(saveProject)"><span class="mc">&#10003;</span><span>Save Project</span><span class="mk">Ctrl &#8679; K</span></div>
           <div class="msep"></div>
           <div class="mlabel">Export</div>
           <div class="mrow" onclick="menuDo(exportKVS)"><span class="mc">&#10003;</span><span>KANVAS Document</span><span class="mk">.kvs</span></div>
@@ -718,6 +722,8 @@ kbd { font-family:var(--fm); font-size:9.5px; padding:2px 6px; border-radius:4px
       <div class="pcap">Rasterises each page as a background image and re-expresses your marks as editable KANVAS objects on top. One-way — for illustration work, not round-tripping.</div>
       <button class="pbtn" onclick="exportDOKHtml()">Send Text to DOK (.html)</button>
       <div class="pcap">Pulls edited/added text into a reflowable copy DOK can import — the original page layout is not preserved.</div>
+      <button class="pbtn" onclick="saveProject()">Save Project (.kmb)</button>
+      <div class="pcap">Everything — page order, rotation, crops, every mark, saved signatures — plus the original PDF, in one file you can reopen and keep editing later.</div>
     </div>
   </div>
 
@@ -768,6 +774,7 @@ kbd { font-family:var(--fm); font-size:9.5px; padding:2px 6px; border-radius:4px
       <div class="kbd-line"><span>Signature</span><kbd>G</kbd></div>
       <div class="kbd-line"><span>Comment</span><kbd>C</kbd></div>
       <div class="kbd-line"><span>Open PDF</span><kbd>Ctrl O</kbd></div>
+      <div class="kbd-line"><span>Save project</span><kbd>Ctrl &#8679; K</kbd></div>
       <div class="kbd-line"><span>Save PDF</span><kbd>Ctrl S</kbd></div>
       <div class="kbd-line"><span>Delete mark</span><kbd>Del</kbd></div>
       <div class="kbd-line"><span>Zoom in / out</span><kbd>Ctrl +/&minus;</kbd></div>
@@ -781,6 +788,7 @@ kbd { font-family:var(--fm); font-size:9.5px; padding:2px 6px; border-radius:4px
 <div class="modal-scrim" id="modal-about">
   <div class="modal">
     <h2>About KOMBINER</h2>
+    <div style="font-family:var(--fm);font-size:10px;letter-spacing:0.05em;text-transform:uppercase;color:var(--a1);margin-bottom:12px;">Kernel-Oriented Markup, Binding &amp; Interactive Notation Engine for Revision</div>
     <div class="lede">KOMBINER is KADsuite's PDF app. It edits the page you actually have — scanned, signed, or exported from somewhere else — in place, on a fixed content surface with a real redaction step, real form and signature tools, and page-level operations. It does not route your document through a paragraph model or a vector canvas to do it; those are DOK's and KANVAS's jobs, and this file explains, in its own header comment, why that split holds. Export to KANVAS is offered as a one-way hand-off for illustration work, not as the native path.</div>
     <div class="modal-actions"><button class="mbtn primary" onclick="close_('modal-about')">Close</button></div>
   </div>
@@ -789,6 +797,7 @@ kbd { font-family:var(--fm); font-size:9.5px; padding:2px 6px; border-radius:4px
 <div id="toast"></div>
 <div id="busy"><div class="spinner"></div><div id="busy-txt">Working&#8230;</div></div>
 <input type="file" id="file-input" accept="application/pdf,.pdf" style="display:none" onchange="onFileChosen(event)">
+<input type="file" id="project-input" accept=".kmb,application/json" style="display:none" onchange="onProjectFileChosen(event)">
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
@@ -974,6 +983,11 @@ function renderPages(){
       const c = document.createElement('div');
       c.className = 'sample-content';
       c.innerHTML = sampleDocHTML(p.sampleIdx, STATE.pages.filter(x=>x.isSample).length || 2);
+      surf.appendChild(c);
+    } else if (p.srcIndex != null){
+      const c = document.createElement('div');
+      c.className = 'sample-content';
+      c.innerHTML = `<div class="doc-h1" style="color:#c9c9d2">Page image unavailable offline</div><div class="doc-sub">Marks and page order are restored — reconnect to reload this page</div>`;
       surf.appendChild(c);
     } else {
       const c = document.createElement('div');
@@ -1764,6 +1778,132 @@ function exportDOKHtml(){
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+   PROJECT FILE (.kmb) — native save/open. This is the sidecar working
+   format: page order, rotation, crop, and every annotation, plus the
+   original PDF bytes (embedded, base64) when one is open. It is NOT a
+   substitute for .pdf — Save PDF still writes a plain, portable PDF.
+   .kmb exists so a half-finished markup session survives closing the tab,
+   the same relationship KANVAS's .kvs has to a KANVAS document.
+   ═══════════════════════════════════════════════════════════════════════ */
+const KMB_FORMAT = 'KMB', KMB_VERSION = '1.0';
+
+function bufToBase64(buf){
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  let binary = ''; const chunk = 0x8000;
+  for (let i=0; i<bytes.length; i+=chunk){
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i+chunk));
+  }
+  return btoa(binary);
+}
+function base64ToBuf(b64){
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i=0; i<binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function serializePagesForProject(){
+  return STATE.pages.map(p => ({
+    id: p.id, w: p.w, h: p.h, rotation: p.rotation || 0,
+    annos: p.annos, isSample: !!p.isSample, sampleIdx: p.sampleIdx,
+    isBlank: !!p.isBlank, srcIndex: p.srcIndex != null ? p.srcIndex : null,
+    cropApplied: !!p.cropApplied,
+  }));
+}
+
+async function saveProject(){
+  busy(true, 'Packing project…');
+  try {
+    const obj = {
+      format: KMB_FORMAT, version: KMB_VERSION, generator: 'KOMBINER 1.0',
+      saved: new Date().toISOString(),
+      filename: STATE.filename,
+      isRealPDF: STATE.isRealPDF,
+      pdfBytesBase64: (STATE.isRealPDF && STATE.pdfBytes) ? bufToBase64(STATE.pdfBytes) : null,
+      pages: serializePagesForProject(),
+      activePageId: STATE.activePageId,
+      savedSignatures: STATE.savedSignatures,
+      zoom: STATE.zoom, ruler: STATE.ruler,
+    };
+    download(JSON.stringify(obj), (STATE.filename||'Untitled')+'.kmb', 'application/octet-stream');
+    markClean();
+    toast('Project saved (.kmb)');
+  } catch (e){
+    console.error(e);
+    toast('Could not save the project — see console for details');
+  }
+  busy(false);
+}
+
+function triggerOpenProject(){ $('project-input').click(); }
+
+async function onProjectFileChosen(ev){
+  const file = ev.target.files[0]; ev.target.value = '';
+  if (!file) return;
+  busy(true, 'Opening project…');
+  try {
+    const text = await file.text();
+    const obj = JSON.parse(text);
+    if (obj.format !== KMB_FORMAT){ throw new Error('Not a KOMBINER project file'); }
+
+    STATE.filename = obj.filename || 'Untitled';
+    STATE.savedSignatures = obj.savedSignatures || [];
+    STATE.zoom = obj.zoom || 1;
+    STATE.ruler = obj.ruler !== false;
+    STATE.isRealPDF = !!obj.isRealPDF;
+    STATE.pdfBytes = null; STATE.pdfjsDoc = null;
+    STATE.history = []; STATE.selectedAnno = null;
+
+    STATE.pages = (obj.pages || []).map(p => ({
+      id: p.id, w: p.w, h: p.h, rotation: p.rotation||0, annos: p.annos||[],
+      isSample: !!p.isSample, sampleIdx: p.sampleIdx, isBlank: !!p.isBlank,
+      srcIndex: p.srcIndex, cropApplied: !!p.cropApplied,
+      pdfPageRef: undefined,
+    }));
+    if (!STATE.pages.length) STATE.pages = [newBlankPageObj()];
+    STATE.activePageId = (obj.activePageId && STATE.pages.some(p=>p.id===obj.activePageId))
+      ? obj.activePageId : STATE.pages[0].id;
+
+    if (STATE.isRealPDF && obj.pdfBytesBase64){
+      STATE.pdfBytes = base64ToBuf(obj.pdfBytesBase64);
+      await reattachPdfEngine();
+    }
+
+    $('stage').classList.toggle('no-ruler', !STATE.ruler);
+    $('m-ruler') && $('m-ruler').classList.toggle('on', STATE.ruler);
+    markClean();
+    renderPages(); renderThumbnails(); updateNavReadouts();
+    setZoom(STATE.zoom);
+    toast('Project opened' + (STATE.isRealPDF && !STATE.pdfjsDoc ? ' — reconnect to reload page images' : ''));
+  } catch (e){
+    console.error(e);
+    toast('Could not open that project file');
+  }
+  busy(false);
+}
+
+async function reattachPdfEngine(){
+  try {
+    if (typeof pdfjsLib === 'undefined'){ throw new Error('pdf.js not available'); }
+    if (pdfjsLib.GlobalWorkerOptions && !pdfjsLib.GlobalWorkerOptions.workerSrc){
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+    const doc = await pdfjsLib.getDocument({ data: STATE.pdfBytes.slice(0) }).promise;
+    STATE.pdfjsDoc = doc;
+    for (const p of STATE.pages){
+      if (p.srcIndex != null){
+        const pg = await doc.getPage(p.srcIndex + 1);
+        p.pdfPageRef = pg;
+      }
+    }
+  } catch (e){
+    console.error(e);
+    // Project still opens — page geometry and every mark are restored from
+    // the .kmb itself. Only the page image needs the engine back.
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
    SIGNATURE PAD
    ═══════════════════════════════════════════════════════════════════════ */
 let sigCtx = null, sigDrawing = false, sigHasInk = false;
@@ -1872,6 +2012,7 @@ document.addEventListener('keydown', (ev)=>{
     else if (k==='0'){ ev.preventDefault(); setZoom(1); }
     else if (k==='9'){ ev.preventDefault(); fitWidth(); }
     else if (k==='d'){ ev.preventDefault(); duplicateActivePage(); }
+    else if (k==='k' && ev.shiftKey){ ev.preventDefault(); saveProject(); }
     return;
   }
   if (ev.key==='Escape'){ closeAllMenus(); STATE.selectedAnno=null; STATE.pages.forEach(renderAnnotations); return; }
